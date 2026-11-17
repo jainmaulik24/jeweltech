@@ -1,0 +1,67 @@
+openapi: 3.0.3
+info:
+  title: Jeweltech Core API
+  version: 1.0.0
+  description: Append-only integer-based gold ledger API. Endpoints designed for agentic tool use.
+paths:
+  /api/orders:
+    post:
+      operationId: createOrder
+      summary: Creates a new job-work order between a jeweller and karigar.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jewellerId, karigarId]
+              properties:
+                jewellerId: { type: string }
+                karigarId: { type: string }
+                description: { type: string }
+      responses:
+        '200':
+          description: Order created
+  /api/orders/{id}/balance:
+    get:
+      operationId: getOrderBalance
+      summary: Replays the hash-chain to calculate current net gold held by the Karigar.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Cryptographically verified ledger state
+  /api/ledger/event:
+    post:
+      operationId: recordLedgerEvent
+      summary: Appends an issue, return, or scrap entry to the hash chain.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orderId, type, weightMg, idempotencyKey]
+              properties:
+                orderId: { type: string }
+                type: { type: string, enum: [issue, return, scrap_entry, correction] }
+                weightMg: { type: integer, description: "Must be integer milligrams" }
+                idempotencyKey: { type: string }
+      responses:
+        '200':
+          description: Event recorded as pending_ack
+  /api/ledger/{eventId}/acknowledge:
+    post:
+      operationId: acknowledgeEvent
+      summary: Second party confirms a pending event, locking it into the balance.
+      parameters:
+        - name: eventId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Event acknowledged
