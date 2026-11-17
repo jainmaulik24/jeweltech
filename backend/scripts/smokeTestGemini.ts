@@ -3,8 +3,8 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Ensure we hit the real network
-process.env.USE_MOCK_LLM = 'false';
+// This is the only supported workflow that selects the live Gemini adapter.
+process.env.LLM_ADAPTER = 'gemini';
 
 async function run() {
     console.log(`\n🔥 Starting Gemini Live Smoke Test...`);

@@ -1,9 +1,4 @@
 import { parseUtterance } from '../agent';
-import dotenv from 'dotenv';
-dotenv.config();
-
-// We must hit the live API for NLP tests
-process.env.USE_MOCK_LLM = 'false';
 
 // The 50-Utterance Test Set (English + Kannada + Tricky Math + Garbage)
 const utterances = [

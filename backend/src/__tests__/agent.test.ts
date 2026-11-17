@@ -3,6 +3,10 @@ import { runAgentTurn, agentTools } from '../agent';
 import { appendLedgerEvent } from '../ledger';
 
 describe('Chunk 9: Agent Layer & Tool Constraints', () => {
+    it('selects the mock adapter in Jest', () => {
+        expect(process.env.LLM_ADAPTER).toBe('mock');
+    });
+
     beforeEach(() => {
         db.exec('DELETE FROM agent_logs; DELETE FROM ledger_events; DELETE FROM orders; DELETE FROM users;');
         db.exec(`

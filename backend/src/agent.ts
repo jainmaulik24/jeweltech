@@ -7,7 +7,15 @@ import dotenv from 'dotenv';
 import { now as clockNow } from './clock';
 import { deadlineAgentTools } from './deadlineAgent';
 
-dotenv.config();
+dotenv.config({ override: false });
+
+type LlmAdapter = 'mock' | 'gemini';
+
+function getLlmAdapter(): LlmAdapter {
+    const adapter = process.env.LLM_ADAPTER ?? 'mock';
+    if (adapter === 'mock' || adapter === 'gemini') return adapter;
+    throw new Error(`Unsupported LLM_ADAPTER: ${adapter}`);
+}
 
 // 1. Tool Registry (Unchanged public contract)
 export const agentTools = {
@@ -60,6 +68,10 @@ const AgentOutputSchema = z.object({
     text: z.string().optional()
 });
 
+export function parseAgentOutput(rawText: string) {
+    return AgentOutputSchema.parse(JSON.parse(rawText));
+}
+
 // 4. Gemini Network Handler (Timeout, Retry, Validation, Logging)
 async function fetchFromGemini(prompt: string, attempt = 1): Promise<any> {
     const promptId = crypto.randomUUID();
@@ -78,17 +90,17 @@ async function fetchFromGemini(prompt: string, attempt = 1): Promise<any> {
 
         const systemInstruction = `You are a Jeweltech assistant. Respond in JSON matching this exact structure: { "toolCall": "getLateOrders" | "draftSettlement" | "none", "args": { "orderId": "str", "weightMg": 123 }, "text": "msg" }. Choose a toolCall. Provide 'args' if needed, and a 'text' message. Never attempt to finalize a settlement.`;
 
-        const result = await model.generateContent({
-            contents: [{ role: 'user', parts: [{ text: `${systemInstruction}\n\nUser: ${prompt}` }] }]
-        }, { signal: controller.signal });
-
-        clearTimeout(timeoutId);
+        let result;
+        try {
+            result = await model.generateContent({
+                contents: [{ role: 'user', parts: [{ text: `${systemInstruction}\n\nUser: ${prompt}` }] }]
+            }, { signal: controller.signal });
+        } finally {
+            clearTimeout(timeoutId);
+        }
 
         const rawText = result.response.text();
-        const parsedJson = JSON.parse(rawText);
-
-        // Zod validation throws error on invalid output
-        const validatedOutput = AgentOutputSchema.parse(parsedJson);
+        const validatedOutput = parseAgentOutput(rawText);
 
         console.log(`[LLM] ID: ${promptId} | Latency: ${Date.now() - startTime}ms | Valid: ✅`);
         return validatedOutput;
@@ -98,7 +110,14 @@ async function fetchFromGemini(prompt: string, attempt = 1): Promise<any> {
 
         if (attempt === 1) {
             // Exponential backoff: Wait 1.5s then retry exactly once
-            await new Promise(res => setTimeout(res, 1500));
+            let backoffTimer: ReturnType<typeof setTimeout> | undefined;
+            try {
+                await new Promise<void>((resolve) => {
+                    backoffTimer = setTimeout(resolve, 1500);
+                });
+            } finally {
+                if (backoffTimer) clearTimeout(backoffTimer);
+            }
             return fetchFromGemini(prompt, 2);
         }
 
@@ -115,7 +134,7 @@ export async function runAgentTurn(message: string, mockLlmResponse?: any) {
     let llmInstruction = mockLlmResponse;
 
     // Use Real LLM if mock isn't forced by environment
-    if (process.env.USE_MOCK_LLM !== 'true') {
+    if (getLlmAdapter() === 'gemini') {
         llmInstruction = await fetchFromGemini(message);
         if (llmInstruction.error) {
             responseContent = `Error: ${llmInstruction.message}`;
