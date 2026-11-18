@@ -9,6 +9,7 @@ import {
     toFineGoldPerMilleMg,
 } from './calc';
 import { DISPUTE_CONFIG, DisputeResolutionOption } from './disputeConfig';
+import { AGREEMENT_CONFIG } from './agreementConfig';
 import { DisputeContestSchema, DisputeResolutionSchema } from './schema';
 import {
     appendLedgerEvent,
@@ -126,7 +127,7 @@ function getPinnedAgreement(event: EventRow) {
         id: string;
         version: number;
         jobType: string;
-        basis: 'fine_issued' | 'gross_issued' | 'finished_weight';
+        basis: 'ideal_return_buffer' | 'fine_issued' | 'gross_issued' | 'finished_weight';
         percentBps: number;
         labourRatePaisePerGram: number;
         effectiveAt: string;
@@ -183,11 +184,21 @@ function getHistory(order: OrderRow) {
                 SELECT basis, percent_bps AS percentBps
                 FROM wastage_agreements WHERE id = ? AND version = ?
             `).get(issue.agreementId, issue.agreementVersion) as {
-                basis: 'fine_issued' | 'gross_issued' | 'finished_weight';
+                basis: 'ideal_return_buffer' | 'fine_issued' | 'gross_issued' | 'finished_weight';
                 percentBps: number;
             } | undefined
             : undefined;
-        return { issuedLots, finishedLots, scrapLots, agreement: agreement ?? null };
+        const agreementWithConfig = agreement?.basis === 'ideal_return_buffer'
+            ? {
+                ...agreement,
+                idealReturnConfig: {
+                    idealReturnFactorBp: AGREEMENT_CONFIG.idealReturnFactorBp,
+                    bufferBp: AGREEMENT_CONFIG.bufferBp,
+                },
+                idealReturnPurityPerMille: AGREEMENT_CONFIG.idealReturnPurityPerMille,
+            }
+            : agreement;
+        return { issuedLots, finishedLots, scrapLots, agreement: agreementWithConfig ?? null };
     });
     const totals = calculateDisputeHistoryTotals(jobs);
     return {

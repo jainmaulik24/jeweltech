@@ -5,7 +5,13 @@ import { parseUtterance } from './agent';
 import express from 'express';
 import crypto from 'crypto';
 import db from './db';
-import { appendLedgerEvent, replayAndVerifyOrder, progressEventStatus } from './ledger';
+import {
+    appendLedgerEvent,
+    replayAndVerifyOrder,
+    progressEventStatus,
+    recordLedgerAcknowledgement,
+} from './ledger';
+import { loginWithPin } from './auth';
 import { now } from './clock';
 import {
     CreateOrderSchema,
@@ -18,6 +24,7 @@ import {
     WastageAgreementDraftSchema,
     GoldHandoffRequestSchema,
     GoldHandoffRejectionSchema,
+    PinLoginSchema,
 } from './schema';
 import { formatAgreementSummary, getActiveAgreement, getAgreementVersions } from './agreements';
 import { AGREEMENT_CONFIG, PURITY_TABLE, RETURN_RECONCILIATION_CONFIG } from './agreementConfig';
@@ -28,18 +35,23 @@ import { GOLD_JOURNEY_CONFIG } from './goldJourneyConfig';
 import { getRate } from './rateService';
 import {
     calculateReturnReconciliation,
-    calculateEffectiveRatePaisePerFinishedGram,
+    calculateFairPayPaise,
+    calculateIdealReturn,
     calculateRatePolicyAmounts,
-    calculateWeightShareMg,
     computeAgreementAllowanceMg,
+    divideAndRoundInt,
     formatWeightMgAsGrams,
+    calculateNetGoldMg,
+    calculateSignedGoldValuePaise,
     parseUnitToMg,
     parsePercentToBps,
     parseRupeesToPaise,
     toFineGoldPerMilleMg,
     calculateGoldAtLargeSummary,
     calculateAgeingDays,
+    calculateDaysUntil,
     addHoursToDate,
+    calculateKarigarSlip,
 } from './calc';
 import {
     acknowledgeCustodyTransfer,
@@ -61,6 +73,28 @@ import {
     resolveDispute,
 } from './disputes';
 import { DISPUTE_CONFIG } from './disputeConfig';
+import { KARIGAR_FLOAT_CONFIG } from './karigarFloatConfig';
+import { KARIGAR_EXPOSURE_CONFIG } from './karigarExposureConfig';
+import {
+    completeOwnerIssueApproval,
+    createOwnerIssueApproval,
+    getCleanReturnCount,
+    getKarigarExposureDashboard,
+    getKarigarExposureSentence,
+    getOwnerIssueApproval,
+    getPendingFloatIssueReservationMg,
+    getPendingOwnerIssueApprovals,
+    getTrustTier,
+} from './karigarExposure';
+import {
+    createFloatSettlementDraft,
+    createThresholdSettlementDraft,
+    ensureKarigarFloat,
+    getPendingFloatSettlementDraft,
+    getKarigarFloatForPair,
+    listKarigarFloats,
+    replayKarigarFloat,
+} from './karigarFloats';
 
 const app = express();
 const disputeBodyLimit = Math.ceil(
@@ -76,6 +110,18 @@ const getUserId = (req: express.Request) => {
     return userId;
 };
 
+app.post('/api/auth/pin-login', (req, res) => {
+    try {
+        const credentials = PinLoginSchema.parse(req.body);
+        const user = loginWithPin(credentials.phone, credentials.pin) as {
+            id: string;
+            role: string;
+            name: string;
+        };
+        res.json({ id: user.id, role: user.role, name: user.name });
+    } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
 const sampleOrderIds = [
     'ord-handshake-demo',
     DAILY_BRIEF_CONFIG.demo.dueTodayOrderId,
@@ -83,7 +129,9 @@ const sampleOrderIds = [
     DISPUTE_CONFIG.demo.orderId,
     GOLD_JOURNEY_CONFIG.demo.orderId,
     ...RETURN_RECONCILIATION_CONFIG.demoScenarios.map((scenario) => scenario.orderId),
+    ...RETURN_RECONCILIATION_CONFIG.idealReturnScenarios.map((scenario) => scenario.orderId),
     ...GOLD_AT_LARGE_CONFIG.demoJobs.map((scenario) => scenario.orderId),
+    ...KARIGAR_FLOAT_CONFIG.demo.draws.map((draw) => draw.orderId),
 ];
 
 const parseLedgerDate = (value: string): Date => {
@@ -120,11 +168,17 @@ app.post('/api/orders', (req, res) => {
             now().getTime() + DEADLINE_CONFIG.defaultOccasionLeadDays * 86_400_000,
         ).toISOString();
         const occasionDate = request.occasionDate ?? dueDate;
+        const targetWeightMg = request.targetWeightMg ?? RETURN_RECONCILIATION_CONFIG.targetWeightMg;
+        const toleranceMg = request.toleranceMg ?? RETURN_RECONCILIATION_CONFIG.targetToleranceMg;
 
         db.prepare(`
-            INSERT INTO orders (id, jeweller_id, karigar_id, description, due_date, occasion_date, job_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(id, request.jewellerId, request.karigarId, request.description, dueDate, occasionDate, request.jobType);
+            INSERT INTO orders
+                (id, jeweller_id, karigar_id, description, due_date, occasion_date, job_type, target_weight_mg, tolerance_mg)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+            id, request.jewellerId, request.karigarId, request.description,
+            dueDate, occasionDate, request.jobType, targetWeightMg, toleranceMg,
+        );
         res.json({
             id,
             jewellerId: request.jewellerId,
@@ -134,6 +188,8 @@ app.post('/api/orders', (req, res) => {
             dueDate,
             occasionDate,
             jobType: request.jobType,
+            targetWeightMg,
+            toleranceMg,
         });
     } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
@@ -207,6 +263,9 @@ app.get('/api/gold-at-large', (req, res) => {
                 AND EXISTS (
                     SELECT 1 FROM ledger_events i
                     WHERE i.order_id = o.id AND i.type = 'issue' AND i.status = 'acknowledged'
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM karigar_floats f WHERE f.ledger_order_id = o.id
                 )
             ORDER BY o.rowid
         `).all(actorId) as Array<{
@@ -387,7 +446,10 @@ app.post('/api/orders/:id/agreements', (req, res) => {
         const draftInput = {
             ...req.body,
             percentBps: req.body.percentBps ?? parsePercentToBps(String(req.body.wastagePercent)),
-            labourRatePaisePerGram: req.body.labourRatePaisePerGram ?? parseRupeesToPaise(String(req.body.labourRateRupees)),
+            labourRatePaisePerGram: req.body.labourRatePaisePerGram
+                ?? (req.body.labourRateRupees === undefined
+                    ? 0
+                    : parseRupeesToPaise(String(req.body.labourRateRupees))),
             karigarSweepShareBps: req.body.karigarSweepShareBps
                 ?? (req.body.sweepOwner === 'karigar'
                     ? 10000
@@ -493,6 +555,10 @@ app.get('/api/orders/:id/agreement-analysis', (req, res) => {
             issuedPurityPerMille: sample.issuedPurityPerMille,
             finishedWeightMg: sample.finishedWeightMg,
             percentBps: activeAgreement?.percentBps ?? 300,
+            idealReturnConfig: {
+                idealReturnFactorBp: AGREEMENT_CONFIG.idealReturnFactorBp,
+                bufferBp: AGREEMENT_CONFIG.bufferBp,
+            },
         };
         const allowanceComparison = AGREEMENT_CONFIG.bases.map(({ value, label }) => ({
             basis: value,
@@ -506,24 +572,57 @@ app.get('/api/orders/:id/agreement-analysis', (req, res) => {
         });
         let fairPay = null;
         if (activeAgreement) {
-            const allowanceMg = computeAgreementAllowanceMg({
-                ...allowanceInput,
+            const fairPaySample = activeAgreement.basis === 'ideal_return_buffer'
+                ? AGREEMENT_CONFIG.fairPayDemo
+                : sample;
+            const fairPayAllowanceInput = {
+                issuedGrossMg: fairPaySample.issuedGrossMg,
+                issuedPurityPerMille: fairPaySample.issuedPurityPerMille,
+                finishedWeightMg: fairPaySample.finishedWeightMg,
                 percentBps: activeAgreement.percentBps,
+                idealReturnConfig: allowanceInput.idealReturnConfig,
+            };
+            const allowanceMg = computeAgreementAllowanceMg({
+                ...fairPayAllowanceInput,
                 basis: activeAgreement.basis,
             });
-            const karigarSweepShareMg = calculateWeightShareMg(sample.estimatedSweepMg, activeAgreement.karigarSweepShareBps);
-            const result = calculateEffectiveRatePaisePerFinishedGram({
-                labourRatePaisePerGram: activeAgreement.labourRatePaisePerGram,
-                allowanceMg,
-                finishedWeightMg: sample.finishedWeightMg,
-                sweepShareMg: karigarSweepShareMg,
-                simulatedGoldRatePaisePerGram: sample.simulatedRatesPaisePerGram.settlement,
-                syntheticReferenceRangePaisePerGram: AGREEMENT_CONFIG.syntheticReferenceRangePaisePerGram,
+            const retainedGoldMg = activeAgreement.basis === 'ideal_return_buffer'
+                ? calculateIdealReturn(fairPaySample.issuedGrossMg, fairPaySample.finishedWeightMg, {
+                    idealReturnFactorBp: AGREEMENT_CONFIG.idealReturnFactorBp,
+                    bufferBp: AGREEMENT_CONFIG.bufferBp,
+                }).retainedGoldMg
+                : allowanceMg;
+            const fairPayParts = calculateFairPayPaise({
+                retainedGoldMg,
+                goldPurityPerMille: AGREEMENT_CONFIG.idealReturnPurityPerMille,
+                simulatedRatePaisePerGram: sample.simulatedRatesPaisePerGram.settlement,
+                pieceCounts: AGREEMENT_CONFIG.fairPayDemo.pieceCounts,
+                perPiecePayPaise: AGREEMENT_CONFIG.perPiecePayPaise,
             });
+            const effectiveRatePaisePerFinishedGram = divideAndRoundInt(
+                fairPayParts.fairPayPaise * 1000,
+                fairPaySample.finishedWeightMg,
+            );
             fairPay = {
-                ...result,
+                labourPaisePerFinishedGram: 0,
+                allowanceValuePaisePerFinishedGram: divideAndRoundInt(
+                    fairPayParts.retainedGoldValuePaise * 1000,
+                    fairPaySample.finishedWeightMg,
+                ),
+                sweepValuePaisePerFinishedGram: divideAndRoundInt(
+                    fairPayParts.perPiecePayPaise * 1000,
+                    fairPaySample.finishedWeightMg,
+                ),
+                effectiveRatePaisePerFinishedGram,
+                outlier: effectiveRatePaisePerFinishedGram < AGREEMENT_CONFIG.syntheticReferenceRangePaisePerGram.min
+                    || effectiveRatePaisePerFinishedGram > AGREEMENT_CONFIG.syntheticReferenceRangePaisePerGram.max,
+                retainedGoldMg,
+                retainedGoldValuePaise: fairPayParts.retainedGoldValuePaise,
+                perPiecePayPaise: fairPayParts.perPiecePayPaise,
+                fairPayPaise: fairPayParts.fairPayPaise,
                 version: activeAgreement.version,
                 syntheticReferenceRangePaisePerGram: AGREEMENT_CONFIG.syntheticReferenceRangePaisePerGram,
+                sample: fairPaySample,
             };
         }
 
@@ -539,6 +638,9 @@ app.get('/api/orders/:id/agreement-analysis', (req, res) => {
             configuration: {
                 jobTypes: AGREEMENT_CONFIG.jobTypes,
                 bases: AGREEMENT_CONFIG.bases,
+                idealReturnFactorBp: AGREEMENT_CONFIG.idealReturnFactorBp,
+                bufferBp: AGREEMENT_CONFIG.bufferBp,
+                perPiecePayPaise: AGREEMENT_CONFIG.perPiecePayPaise,
             },
             sample: {
                 issuedGrossMg: sample.issuedGrossMg,
@@ -582,14 +684,16 @@ app.get('/api/orders/:id/returns/config', (req, res) => {
             SELECT basis, percent_bps AS percentBps, version
             FROM wastage_agreements WHERE id = ? AND version = ?
         `).get(latestIssue.agreementId, latestIssue.agreementVersion) as {
-            basis: 'fine_issued' | 'gross_issued' | 'finished_weight';
+            basis: 'ideal_return_buffer' | 'fine_issued' | 'gross_issued' | 'finished_weight';
             percentBps: number;
             version: number;
         } | undefined;
         if (!agreement) throw new Error('The issue agreement version is unavailable.');
 
-        const scenario = RETURN_RECONCILIATION_CONFIG.demoScenarios
-            .find((item) => item.orderId === req.params.id) ?? null;
+        const scenario = [
+            ...RETURN_RECONCILIATION_CONFIG.demoScenarios,
+            ...RETURN_RECONCILIATION_CONFIG.idealReturnScenarios,
+        ].find((item) => item.orderId === req.params.id) ?? null;
         res.json({
             issuedLots: issueRows.map((issue) => ({
                 weightMg: issue.weightMg,
@@ -602,8 +706,14 @@ app.get('/api/orders/:id/returns/config', (req, res) => {
                     weightGrams: formatWeightMgAsGrams(lot.weightMg),
                     purityPerMille: lot.purityPerMille,
                     method: lot.method,
+                    stoneWeightGrams: formatWeightMgAsGrams(
+                        'stoneWeightMg' in lot ? lot.stoneWeightMg ?? 0 : 0,
+                    ),
+                    otherNonGoldWeightGrams: formatWeightMgAsGrams(
+                        'otherNonGoldWeightMg' in lot ? lot.otherNonGoldWeightMg ?? 0 : 0,
+                    ),
                 })),
-                scrapLots: scenario.scrapLots.map((lot) => ({
+                scrapLots: ('scrapLots' in scenario ? scenario.scrapLots ?? [] : []).map((lot) => ({
                     weightGrams: formatWeightMgAsGrams(lot.weightMg),
                     purityPerMille: lot.purityPerMille,
                 })),
@@ -612,6 +722,13 @@ app.get('/api/orders/:id/returns/config', (req, res) => {
                 grossWeightToleranceMg: RETURN_RECONCILIATION_CONFIG.grossWeightToleranceMg,
                 purityShortfallToleranceFineMg: RETURN_RECONCILIATION_CONFIG.purityShortfallToleranceFineMg,
                 unusedAllowancePolicy: RETURN_RECONCILIATION_CONFIG.unusedAllowancePolicy,
+                idealReturnFactorBp: AGREEMENT_CONFIG.idealReturnFactorBp,
+                bufferBp: AGREEMENT_CONFIG.bufferBp,
+                idealReturnPurityPerMille: AGREEMENT_CONFIG.idealReturnPurityPerMille,
+                simulatedRatePaisePerGram: AGREEMENT_CONFIG.demo.simulatedRatesPaisePerGram.settlement,
+                targetWeightMg: order.target_weight_mg,
+                targetToleranceMg: order.tolerance_mg,
+                perPiecePayPaise: AGREEMENT_CONFIG.perPiecePayPaise,
                 purityReadLabel: RETURN_RECONCILIATION_CONFIG.purityReadLabel,
                 purities: PURITY_TABLE,
             },
@@ -663,7 +780,7 @@ app.post('/api/orders/:id/returns/reconcile', (req, res) => {
             SELECT basis, percent_bps AS percentBps, version
             FROM wastage_agreements WHERE id = ? AND version = ?
         `).get(latestIssue.agreementId, latestIssue.agreementVersion) as {
-            basis: 'fine_issued' | 'gross_issued' | 'finished_weight';
+            basis: 'ideal_return_buffer' | 'fine_issued' | 'gross_issued' | 'finished_weight';
             percentBps: number;
             version: number;
         } | undefined;
@@ -677,11 +794,15 @@ app.post('/api/orders/:id/returns/reconcile', (req, res) => {
         };
         const finishedLots = requestInput.finishedLots.map((lot) => ({
             weightMg: parseUnitToMg(lot.weightGrams, 'g'),
+            stoneWeightMg: parseUnitToMg(lot.stoneWeightGrams ?? '0', 'g'),
+            otherNonGoldWeightMg: parseUnitToMg(lot.otherNonGoldWeightGrams ?? '0', 'g'),
             purityPerMille: toPurityPerMille(lot.purityPerMille),
             method: lot.method,
         }));
         const scrapLots = requestInput.scrapLots.map((lot) => ({
             weightMg: parseUnitToMg(lot.weightGrams, 'g'),
+            stoneWeightMg: parseUnitToMg(lot.stoneWeightGrams ?? '0', 'g'),
+            otherNonGoldWeightMg: parseUnitToMg(lot.otherNonGoldWeightGrams ?? '0', 'g'),
             purityPerMille: toPurityPerMille(lot.purityPerMille),
         }));
         const result = calculateReturnReconciliation({
@@ -697,50 +818,80 @@ app.post('/api/orders/:id/returns/reconcile', (req, res) => {
                 purityShortfallToleranceFineMg: RETURN_RECONCILIATION_CONFIG.purityShortfallToleranceFineMg,
                 unusedAllowancePolicy: RETURN_RECONCILIATION_CONFIG.unusedAllowancePolicy,
                 purityLabels: Object.fromEntries(PURITY_TABLE.map((purity) => [purity.perMille, purity.label])),
+                idealReturnFactorBp: AGREEMENT_CONFIG.idealReturnFactorBp,
+                bufferBp: AGREEMENT_CONFIG.bufferBp,
+                idealReturnPurityPerMille: AGREEMENT_CONFIG.idealReturnPurityPerMille,
+                simulatedRatePaisePerGram: AGREEMENT_CONFIG.demo.simulatedRatesPaisePerGram.settlement,
+                targetWeightMg: order.target_weight_mg,
+                targetToleranceMg: order.tolerance_mg,
+                perPiecePayPaise: AGREEMENT_CONFIG.perPiecePayPaise,
             },
+            pieceCounts: requestInput.pieceCounts,
         });
 
-        const agreementRule = `Agreement v${agreement.version}: ${(agreement.percentBps / 100).toFixed(2)}% on ${agreement.basis.replaceAll('_', ' ')}.`;
+        const agreementRule = agreement.basis === 'ideal_return_buffer'
+            ? `Agreement v${agreement.version}: ideal return ${AGREEMENT_CONFIG.idealReturnFactorBp} bp with ${AGREEMENT_CONFIG.bufferBp} bp buffer.`
+            : `Agreement v${agreement.version}: ${(agreement.percentBps / 100).toFixed(2)}% on ${agreement.basis.replaceAll('_', ' ')}.`;
+        const targetFlagNote = result.targetWeightFlagged
+            ? `TARGET WEIGHT FLAG · ${result.targetWeightDeviationMg! < 0 ? 'under' : 'over'} target by ${Math.abs(result.targetWeightDeviationMg!)} mg; price impact ${result.targetWeightPriceImpactPaise! < 0 ? '-' : '+'}${Math.abs(result.targetWeightPriceImpactPaise!)} paise at the SIMULATED rate.`
+            : '';
         const eventPrefix = `return-reconcile-${requestInput.idempotencyKey}`;
         const events = db.transaction(() => {
             const postedEvents: any[] = [];
             finishedLots.forEach((lot, index) => {
+                const netGoldMg = calculateNetGoldMg(
+                    lot.weightMg,
+                    lot.stoneWeightMg,
+                    lot.otherNonGoldWeightMg,
+                );
                 postedEvents.push(appendLedgerEvent({
                     id: `evt-${crypto.randomUUID()}`,
                     orderId: req.params.id,
                     type: 'return',
-                    weightMg: lot.weightMg,
-                    fineWeightMg: toFineGoldPerMilleMg(lot.weightMg, lot.purityPerMille),
+                    weightMg: netGoldMg,
+                    fineWeightMg: toFineGoldPerMilleMg(netGoldMg, lot.purityPerMille),
                     purityPerMille: lot.purityPerMille,
                     status: 'pending_ack',
                     createdBy: actorId,
-                    notes: JSON.stringify({
-                        method: lot.method,
-                        purityPerMille: lot.purityPerMille,
-                        purityReadLabel: RETURN_RECONCILIATION_CONFIG.purityReadLabel,
-                    }),
+                    notes: [
+                        `${lot.method} purity ${lot.purityPerMille}‰ (${RETURN_RECONCILIATION_CONFIG.purityReadLabel})`,
+                        `gross ${lot.weightMg} mg; stone ${lot.stoneWeightMg} mg; other non-gold ${lot.otherNonGoldWeightMg} mg; net gold ${netGoldMg} mg`,
+                        targetFlagNote,
+                    ].filter(Boolean).join('; '),
                     idempotencyKey: `${eventPrefix}-finished-${index}`,
                     agreementId: latestIssue.agreementId,
                     agreementVersion: agreement.version,
+                    grossWeightMg: lot.weightMg,
+                    stoneWeightMg: lot.stoneWeightMg,
+                    otherNonGoldWeightMg: lot.otherNonGoldWeightMg,
                 }));
             });
             scrapLots.forEach((lot, index) => {
+                const netGoldMg = calculateNetGoldMg(
+                    lot.weightMg,
+                    lot.stoneWeightMg,
+                    lot.otherNonGoldWeightMg,
+                );
                 postedEvents.push(appendLedgerEvent({
                     id: `evt-${crypto.randomUUID()}`,
                     orderId: req.params.id,
                     type: 'scrap_entry',
-                    weightMg: lot.weightMg,
-                    fineWeightMg: toFineGoldPerMilleMg(lot.weightMg, lot.purityPerMille),
+                    weightMg: netGoldMg,
+                    fineWeightMg: toFineGoldPerMilleMg(netGoldMg, lot.purityPerMille),
                     purityPerMille: lot.purityPerMille,
                     status: 'pending_ack',
                     createdBy: actorId,
-                    notes: JSON.stringify({
-                        purityPerMille: lot.purityPerMille,
-                        purityReadLabel: RETURN_RECONCILIATION_CONFIG.purityReadLabel,
-                    }),
+                    notes: [
+                        `purity ${lot.purityPerMille}‰ (${RETURN_RECONCILIATION_CONFIG.purityReadLabel})`,
+                        `gross ${lot.weightMg} mg; stone ${lot.stoneWeightMg} mg; other non-gold ${lot.otherNonGoldWeightMg} mg; net gold ${netGoldMg} mg`,
+                        targetFlagNote,
+                    ].filter(Boolean).join('; '),
                     idempotencyKey: `${eventPrefix}-scrap-${index}`,
                     agreementId: latestIssue.agreementId,
                     agreementVersion: agreement.version,
+                    grossWeightMg: lot.weightMg,
+                    stoneWeightMg: lot.stoneWeightMg,
+                    otherNonGoldWeightMg: lot.otherNonGoldWeightMg,
                 }));
             });
             if (result.processLossFineMg > 0 || result.processLossGrossMg > 0) {
@@ -769,7 +920,7 @@ app.post('/api/orders/:id/returns/reconcile', (req, res) => {
                     fineWeightMg: result.owedFineMg,
                     status: 'pending_ack',
                     createdBy: actorId,
-                    notes: `Settlement draft · ${agreementRule}\nKarigar owes ${result.owedFineMg} mg fine gold after allowance; awaiting both parties' approval.`,
+                    notes: `${result.idealReturnStatus === 'SHORT' ? 'FLAGGED SETTLEMENT DRAFT · SHORT' : 'Settlement draft'} · ${agreementRule}\nKarigar owes ${result.owedFineMg} mg fine gold after allowance; awaiting both parties' approval.`,
                     idempotencyKey: `${eventPrefix}-settlement`,
                     agreementId: latestIssue.agreementId,
                     agreementVersion: agreement.version,
@@ -806,6 +957,27 @@ app.get('/api/orders/:id/pending-events', (req, res) => {
             WHERE order_id = ? AND status = 'pending_ack' AND type != 'agreement_version'
             ORDER BY created_at, rowid
         `).all(req.params.id);
+        res.json({ events });
+    } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
+app.get('/api/notifications/pending', (req, res) => {
+    try {
+        const actorId = getUserId(req);
+        const actor = db.prepare('SELECT id FROM users WHERE id = ?').get(actorId);
+        if (!actor) throw new Error('User not found.');
+        const events = db.prepare(`
+            SELECT e.id, e.order_id AS orderId, o.description, e.type, e.notes,
+                e.amount, e.weight_mg AS weightMg, e.created_by AS createdBy,
+                e.agreement_version AS agreementVersion, e.created_at AS createdAt
+            FROM ledger_events e
+            JOIN orders o ON o.id = e.order_id
+            WHERE (o.jeweller_id = ? OR o.karigar_id = ?)
+                AND e.status = 'pending_ack'
+                AND e.type != 'agreement_version'
+                AND e.created_by != ?
+            ORDER BY e.created_at, e.rowid
+        `).all(actorId, actorId, actorId);
         res.json({ events });
     } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
@@ -896,7 +1068,10 @@ app.post('/api/ledger/event', (req, res) => {
         if (!['issue', 'return', 'scrap_entry', 'payment', 'settlement'].includes(type)) {
             throw new Error('This event type must use its dedicated approval workflow.');
         }
-        const orderId = req.body.orderId;
+        let orderId = req.body.orderId as string | undefined;
+        let floatId: string | null = null;
+        let debitAccount: 'jeweller_vault' | 'karigar_float' | null = null;
+        let creditAccount: 'karigar_float' | 'karigar_wip' | null = null;
         let agreementId: string | null = null;
         let agreementVersion: number | null = null;
         let ratePolicy: 'issue' | 'return' | 'settlement' | null = null;
@@ -905,24 +1080,117 @@ app.post('/api/ledger/event', (req, res) => {
         let notes = req.body.notes || null;
         let purityPerMille: number | null = null;
         let fineWeightMg: number | null = null;
+        let eventWeightMg = req.body.weightMg;
+        let grossWeightMg: number | null = null;
+        let stoneWeightMg: number | null = null;
+        let otherNonGoldWeightMg: number | null = null;
+        let issueMakerRole: string | null = null;
+        let issueJewellerId: string | null = null;
+        let issueKarigarId: string | null = null;
+        let isBulkFloatIssue = false;
 
         if (type === 'issue') {
+            if (!Number.isInteger(eventWeightMg) || eventWeightMg <= 0) {
+                throw new Error('Issue weight must be a positive integer number of milligrams.');
+            }
+            if (!orderId) {
+                const actor = db.prepare('SELECT role FROM users WHERE id = ?').get(actorId) as { role: string } | undefined;
+                if (actor?.role !== 'jeweller') throw new Error('Only a jeweller can issue a karigar float.');
+                if (typeof req.body.karigarId !== 'string' || !req.body.karigarId) {
+                    throw new Error('Select a karigar when issuing gold without an order.');
+                }
+                issueMakerRole = actor.role;
+                issueJewellerId = actorId;
+                issueKarigarId = req.body.karigarId;
+                isBulkFloatIssue = true;
+                if (req.body.purityPerMille !== undefined
+                    && req.body.purityPerMille !== KARIGAR_FLOAT_CONFIG.defaultPurityPerMille) {
+                    throw new Error('Karigar floats are issued at the configured 24K purity.');
+                }
+                const float = ensureKarigarFloat(actorId, req.body.karigarId);
+                orderId = float.ledgerOrderId;
+                floatId = float.id;
+                debitAccount = 'jeweller_vault';
+                creditAccount = 'karigar_float';
+                notes = `${notes ?? ''}\nBulk issue to karigar float.`.trim();
+            } else {
+                const order = db.prepare('SELECT jeweller_id AS jewellerId, karigar_id AS karigarId FROM orders WHERE id = ?')
+                    .get(orderId) as { jewellerId: string; karigarId: string } | undefined;
+                if (!order) throw new Error('Order not found.');
+                const actor = db.prepare('SELECT role FROM users WHERE id = ?').get(actorId) as { role: string } | undefined;
+                if (actor?.role === 'jeweller') {
+                    if (order.jewellerId !== actorId) throw new Error('Only the order jeweller can issue gold.');
+                } else if (actor?.role === 'staff') {
+                    const staff = db.prepare(`
+                        SELECT owner_jeweller_id AS ownerJewellerId FROM staff_profiles WHERE user_id = ?
+                    `).get(actorId) as { ownerJewellerId: string } | undefined;
+                    if (!staff || staff.ownerJewellerId !== order.jewellerId) {
+                        throw new Error('Staff can issue only for their configured jeweller owner.');
+                    }
+                } else {
+                    throw new Error('Only a jeweller or their staff can issue gold.');
+                }
+                issueMakerRole = actor.role;
+                issueJewellerId = order.jewellerId;
+                issueKarigarId = order.karigarId;
+                const float = getKarigarFloatForPair(order.jewellerId, order.karigarId);
+                if (float) {
+                    if (req.body.purityPerMille !== undefined
+                        && req.body.purityPerMille !== KARIGAR_FLOAT_CONFIG.defaultPurityPerMille) {
+                        throw new Error('A float draw-down must match the configured 24K purity.');
+                    }
+                    const balance = replayKarigarFloat(float.id);
+                    if (eventWeightMg > balance.availableMg) {
+                        throw new Error(`The karigar float has ${balance.availableMg} mg available; the requested draw-down is ${eventWeightMg} mg.`);
+                    }
+                    floatId = float.id;
+                    debitAccount = 'karigar_float';
+                    creditAccount = 'karigar_wip';
+                    notes = `${notes ?? ''}\nDraw-down from the karigar float.`.trim();
+                }
+            }
             const agreement = getActiveAgreement(orderId);
             agreementId = agreement?.id ?? null;
             agreementVersion = agreement?.version ?? null;
             purityPerMille = validatePurityPerMille(
-                req.body.purityPerMille ?? AGREEMENT_CONFIG.demo.issuedPurityPerMille
+                req.body.purityPerMille
+                    ?? (floatId ? KARIGAR_FLOAT_CONFIG.defaultPurityPerMille : AGREEMENT_CONFIG.demo.issuedPurityPerMille)
             );
             fineWeightMg = toFineGoldPerMilleMg(req.body.weightMg, purityPerMille);
         }
+
+        if (!orderId) throw new Error('An order is required for this ledger event.');
 
         if (type === 'return' || type === 'scrap_entry') {
             purityPerMille = validatePurityPerMille(req.body.purityPerMille);
             if (!['touch', 'XRF', 'declared'].includes(req.body.method)) {
                 throw new Error('A touch, XRF, or declared purity method is required.');
             }
-            fineWeightMg = toFineGoldPerMilleMg(req.body.weightMg, purityPerMille);
-            notes = `${notes ?? ''}\n${req.body.method} purity ${purityPerMille}‰ (${RETURN_RECONCILIATION_CONFIG.purityReadLabel}).`.trim();
+            const grossWeight = req.body.weightMg as number;
+            const stoneWeight = (req.body.stoneWeightMg ?? 0) as number;
+            const otherNonGoldWeight = (req.body.otherNonGoldWeightMg ?? 0) as number;
+            grossWeightMg = grossWeight;
+            stoneWeightMg = stoneWeight;
+            otherNonGoldWeightMg = otherNonGoldWeight;
+            eventWeightMg = calculateNetGoldMg(grossWeight, stoneWeight, otherNonGoldWeight);
+            fineWeightMg = toFineGoldPerMilleMg(eventWeightMg, purityPerMille);
+            notes = `${notes ?? ''}\n${req.body.method} purity ${purityPerMille}‰ (${RETURN_RECONCILIATION_CONFIG.purityReadLabel}); gross ${req.body.weightMg} mg, stone ${stoneWeightMg} mg, other non-gold ${otherNonGoldWeightMg} mg, net gold ${eventWeightMg} mg.`.trim();
+            if (type === 'return') {
+                const order = db.prepare(`
+                    SELECT target_weight_mg AS targetWeightMg, tolerance_mg AS toleranceMg
+                    FROM orders WHERE id = ?
+                `).get(orderId) as { targetWeightMg: number; toleranceMg: number } | undefined;
+                if (!order) throw new Error('Order not found.');
+                const deviationMg = eventWeightMg - order.targetWeightMg;
+                if (Math.abs(deviationMg) > order.toleranceMg) {
+                    const impactPaise = calculateSignedGoldValuePaise(
+                        deviationMg,
+                        AGREEMENT_CONFIG.idealReturnPurityPerMille,
+                        AGREEMENT_CONFIG.demo.simulatedRatesPaisePerGram.settlement,
+                    );
+                    notes += ` RETURN WEIGHT FLAG · ${deviationMg < 0 ? 'under' : 'over'} target by ${Math.abs(deviationMg)} mg; price impact ${impactPaise < 0 ? '-' : '+'}${Math.abs(impactPaise)} paise at the SIMULATED rate.`;
+                }
+            }
         }
 
         if (type === 'payment' || type === 'settlement') {
@@ -962,7 +1230,7 @@ app.post('/api/ledger/event', (req, res) => {
             id: `evt-${crypto.randomUUID()}`,
             orderId,
             type,
-            weightMg: req.body.weightMg,
+            weightMg: eventWeightMg,
             fineWeightMg,
             purityPerMille,
             amount,
@@ -974,9 +1242,122 @@ app.post('/api/ledger/event', (req, res) => {
             agreementVersion,
             ratePolicy,
             rateSnapshotPaisePerGram,
+            floatId,
+            debitAccount,
+            creditAccount,
+            grossWeightMg,
+            stoneWeightMg,
+            otherNonGoldWeightMg,
         };
+
+        if (type === 'issue' && issueMakerRole && issueJewellerId && issueKarigarId) {
+            const approvalReasons: string[] = [];
+            if (isBulkFloatIssue && floatId) {
+                const tier = getTrustTier(getCleanReturnCount(issueJewellerId, issueKarigarId));
+                const balance = replayKarigarFloat(floatId);
+                const reservedMg = getPendingFloatIssueReservationMg(floatId);
+                if (balance.remainingMg + reservedMg + eventWeightMg > tier.floatLimitMg) {
+                    approvalReasons.push(
+                        `Requested float would exceed the ${tier.label} trust limit of ${tier.floatLimitMg} mg.`,
+                    );
+                }
+            }
+            if (issueMakerRole === 'staff'
+                && eventWeightMg >= KARIGAR_EXPOSURE_CONFIG.staffLargeIssueMg) {
+                approvalReasons.push('Large staff issues require the jeweller owner to check and approve them.');
+            }
+            if (approvalReasons.length > 0) {
+                const approval = createOwnerIssueApproval({
+                    jewellerId: issueJewellerId,
+                    karigarId: issueKarigarId,
+                    makerId: actorId,
+                    orderId,
+                    floatId,
+                    debitAccount,
+                    creditAccount,
+                    weightMg: eventWeightMg,
+                    reason: approvalReasons.join(' '),
+                    idempotencyKey: req.body.idempotencyKey,
+                    payload,
+                });
+                if (approval.status === 'approved' && approval.ledgerEventId) {
+                    const event = db.prepare('SELECT * FROM ledger_events WHERE id = ?')
+                        .get(approval.ledgerEventId);
+                    res.json({ approvalRequired: false, event });
+                    return;
+                }
+                if (approval.status === 'rejected') {
+                    throw new Error('This issue request was rejected. Create a new request to try again.');
+                }
+                res.json({
+                    approvalRequired: true,
+                    approvalId: approval.id,
+                    status: approval.status,
+                    reason: approvalReasons.join(' '),
+                });
+                return;
+            }
+        }
         const result = appendLedgerEvent(payload);
         res.json(result);
+    } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
+app.get('/api/owner-issue-approvals', (req, res) => {
+    try {
+        const actorId = getUserId(req);
+        const actor = db.prepare('SELECT role FROM users WHERE id = ?').get(actorId) as { role: string } | undefined;
+        if (actor?.role !== 'jeweller') throw new Error('Only a jeweller owner can review issue requests.');
+        res.json({ approvals: getPendingOwnerIssueApprovals(actorId) });
+    } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
+app.post('/api/owner-issue-approvals/:approvalId/approve', (req, res) => {
+    try {
+        const actorId = getUserId(req);
+        const actor = db.prepare('SELECT role FROM users WHERE id = ?').get(actorId) as { role: string } | undefined;
+        if (actor?.role !== 'jeweller') throw new Error('Only a jeweller owner can approve issue requests.');
+        const approval = getOwnerIssueApproval(req.params.approvalId, actorId);
+        if (!approval) throw new Error('Issue approval request not found for this jeweller.');
+        if (approval.status === 'approved' && approval.ledgerEventId) {
+            const event = db.prepare('SELECT * FROM ledger_events WHERE id = ?').get(approval.ledgerEventId);
+            res.json({ success: true, idempotent: true, event });
+            return;
+        }
+        if (approval.status !== 'pending') throw new Error('This issue request is no longer pending.');
+        const maker = db.prepare('SELECT role FROM users WHERE id = ?').get(approval.makerId) as { role: string } | undefined;
+        if (maker?.role === 'staff') {
+            const staff = db.prepare(`
+                SELECT owner_jeweller_id AS ownerJewellerId FROM staff_profiles WHERE user_id = ?
+            `).get(approval.makerId) as { ownerJewellerId: string } | undefined;
+            if (!staff || staff.ownerJewellerId !== actorId || approval.makerId === actorId) {
+                throw new Error('Owner approval must be separate from the staff maker.');
+            }
+        }
+        const event = db.transaction(() => {
+            const payload = JSON.parse(approval.payloadJson) as Parameters<typeof appendLedgerEvent>[0];
+            const created = appendLedgerEvent(payload) as { id: string };
+            if (!completeOwnerIssueApproval(approval.id, actorId, 'approved', actorId, created.id)) {
+                throw new Error('Issue request was already reviewed.');
+            }
+            return created;
+        })();
+        res.json({ success: true, idempotent: false, event });
+    } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
+app.post('/api/owner-issue-approvals/:approvalId/reject', (req, res) => {
+    try {
+        const actorId = getUserId(req);
+        const actor = db.prepare('SELECT role FROM users WHERE id = ?').get(actorId) as { role: string } | undefined;
+        if (actor?.role !== 'jeweller') throw new Error('Only a jeweller owner can reject issue requests.');
+        const approval = getOwnerIssueApproval(req.params.approvalId, actorId);
+        if (!approval) throw new Error('Issue approval request not found for this jeweller.');
+        if (approval.status !== 'pending') throw new Error('This issue request is no longer pending.');
+        if (!completeOwnerIssueApproval(approval.id, actorId, 'rejected', actorId)) {
+            throw new Error('Issue request was already reviewed.');
+        }
+        res.json({ success: true, approvalId: approval.id, status: 'rejected' });
     } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
@@ -984,23 +1365,460 @@ app.post('/api/ledger/event', (req, res) => {
 app.post('/api/ledger/:eventId/acknowledge', (req, res) => {
     try {
         const actorId = getUserId(req);
-        const event = db.prepare('SELECT type, order_id AS orderId FROM ledger_events WHERE id = ?')
-            .get(req.params.eventId) as { type: string; orderId: string } | undefined;
+        const event = db.prepare(`
+            SELECT type, order_id AS orderId, float_id AS floatId,
+                debit_account AS debitAccount, created_by AS createdBy
+            FROM ledger_events WHERE id = ?
+        `).get(req.params.eventId) as {
+            type: string;
+            orderId: string;
+            floatId: string | null;
+            debitAccount: string | null;
+            createdBy: string;
+        } | undefined;
         if (!event) throw new Error('Event not found.');
         if (event.type === 'custody_transfer_out' || event.type === 'custody_transfer_in') {
             throw new Error('Custody transfers require separate acknowledgements from both karigars.');
         }
-        const carryEvents = db.transaction(() => {
-            progressEventStatus(req.params.eventId, actorId, 'acknowledged');
-            const carryIds = event.type === 'issue'
+        const acknowledgement = db.transaction(() => {
+            const changed = progressEventStatus(req.params.eventId, actorId, 'acknowledged');
+            const record = recordLedgerAcknowledgement(req.params.eventId, actorId, 'self');
+            const carryIds = changed && event.type === 'issue'
                 ? db.prepare(`
                     SELECT ledger_event_id AS id FROM dispute_carries
                     WHERE target_order_id = ? AND status = 'pending_ack'
                 `).all(event.orderId) as Array<{ id: string }>
                 : [];
-            return carryIds.map((carry) => carry.id);
+            const floatSettlementDraft = changed && event.type === 'issue'
+                && event.floatId
+                && event.debitAccount === 'karigar_float'
+                ? createThresholdSettlementDraft(
+                    event.floatId,
+                    (db.prepare('SELECT jeweller_id AS jewellerId FROM karigar_floats WHERE id = ?')
+                        .get(event.floatId) as { jewellerId: string }).jewellerId,
+                )
+                : null;
+            return {
+                carryEvents: carryIds.map((carry) => carry.id),
+                floatSettlementDraft,
+                acknowledgement: record,
+                idempotent: !changed,
+            };
         })();
-        res.json({ success: true, eventId: req.params.eventId, status: 'acknowledged', carryEvents });
+        res.json({
+            success: true,
+            eventId: req.params.eventId,
+            status: 'acknowledged',
+            ...acknowledgement,
+        });
+    } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
+app.post('/api/ledger/:eventId/assisted-acknowledge', (req, res) => {
+    try {
+        const jewellerId = getUserId(req);
+        const event = db.prepare(`
+            SELECT e.type, e.order_id AS orderId, e.created_by AS createdBy,
+                e.float_id AS floatId, e.debit_account AS debitAccount,
+                o.jeweller_id AS jewellerId, o.karigar_id AS karigarId
+            FROM ledger_events e
+            JOIN orders o ON o.id = e.order_id
+            WHERE e.id = ?
+        `).get(req.params.eventId) as {
+            type: string;
+            orderId: string;
+            createdBy: string;
+            floatId: string | null;
+            debitAccount: string | null;
+            jewellerId: string;
+            karigarId: string;
+        } | undefined;
+        if (!event) throw new Error('Event not found.');
+        if (event.jewellerId !== jewellerId) {
+            throw new Error('Only this order’s jeweller can assist the karigar.');
+        }
+        if (event.createdBy !== jewellerId) {
+            throw new Error('Only a jeweller-created entry can be acknowledged for the karigar.');
+        }
+        if (event.type === 'custody_transfer_out' || event.type === 'custody_transfer_in') {
+            throw new Error('Custody transfers require separate acknowledgements from both karigars.');
+        }
+        const acknowledgement = db.transaction(() => {
+            const changed = progressEventStatus(req.params.eventId, event.karigarId, 'acknowledged');
+            const record = recordLedgerAcknowledgement(
+                req.params.eventId,
+                event.karigarId,
+                'assisted',
+                jewellerId,
+            );
+            const carryIds = changed && event.type === 'issue'
+                ? db.prepare(`
+                    SELECT ledger_event_id AS id FROM dispute_carries
+                    WHERE target_order_id = ? AND status = 'pending_ack'
+                `).all(event.orderId) as Array<{ id: string }>
+                : [];
+            const floatSettlementDraft = changed && event.type === 'issue'
+                && event.floatId
+                && event.debitAccount === 'karigar_float'
+                ? createThresholdSettlementDraft(event.floatId, jewellerId)
+                : null;
+            return {
+                acknowledgement: record,
+                idempotent: !changed,
+                carryEvents: carryIds.map((carry) => carry.id),
+                floatSettlementDraft,
+            };
+        })();
+        res.json({
+            success: true,
+            eventId: req.params.eventId,
+            status: 'acknowledged',
+            ...acknowledgement,
+        });
+    } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
+app.get('/api/karigar-floats', (req, res) => {
+    try {
+        const actorId = getUserId(req);
+        const actor = db.prepare('SELECT role FROM users WHERE id = ?').get(actorId) as { role: string } | undefined;
+        if (actor?.role !== 'jeweller') throw new Error('Only a jeweller can manage karigar floats.');
+        const exposureDashboard = getKarigarExposureDashboard(actorId);
+        const exposureByKarigar = new Map(
+            exposureDashboard.karigars.map((entry) => [entry.karigarId, entry]),
+        );
+        const karigars = db.prepare(`
+            SELECT u.id AS karigarId, u.name AS karigarName, f.id AS floatId,
+                EXISTS (
+                    SELECT 1 FROM orders o
+                    WHERE o.jeweller_id = ? AND o.karigar_id = u.id
+                ) AS hasPair
+            FROM users u
+            LEFT JOIN karigar_floats f ON f.karigar_id = u.id AND f.jeweller_id = ?
+            WHERE u.role = 'karigar'
+            ORDER BY u.name, u.id
+        `).all(actorId, actorId) as Array<{
+            karigarId: string;
+            karigarName: string;
+            floatId: string | null;
+            hasPair: number;
+        }>;
+        res.json({
+            karigars: karigars.map((karigar) => ({
+                ...karigar,
+                hasPair: Boolean(karigar.hasPair || karigar.floatId),
+                exposure: exposureByKarigar.get(karigar.karigarId) ?? null,
+                ...(karigar.floatId ? {
+                    ...replayKarigarFloat(karigar.floatId),
+                    pendingSettlementDraft: getPendingFloatSettlementDraft(karigar.floatId),
+                } : {
+                    remainingMg: 0,
+                    availableMg: 0,
+                    pendingDrawdownMg: 0,
+                    targetMg: KARIGAR_FLOAT_CONFIG.targetFloatMg,
+                    settlementThresholdMg: KARIGAR_FLOAT_CONFIG.settlementThresholdMg,
+                    pendingSettlementDraft: null,
+                }),
+            })),
+            configuration: {
+                targetFloatMg: KARIGAR_FLOAT_CONFIG.targetFloatMg,
+                settlementThresholdMg: KARIGAR_FLOAT_CONFIG.settlementThresholdMg,
+                defaultPurityPerMille: KARIGAR_FLOAT_CONFIG.defaultPurityPerMille,
+                trustTiers: KARIGAR_EXPOSURE_CONFIG.trustTiers,
+                staffLargeIssueMg: KARIGAR_EXPOSURE_CONFIG.staffLargeIssueMg,
+            },
+            pendingOwnerApprovals: getPendingOwnerIssueApprovals(actorId),
+            syntheticReplay: exposureDashboard.syntheticReplay,
+        });
+    } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
+app.get('/api/karigar-exposure', (req, res) => {
+    try {
+        const actorId = getUserId(req);
+        const actor = db.prepare('SELECT role FROM users WHERE id = ?').get(actorId) as { role: string } | undefined;
+        if (actor?.role !== 'jeweller') throw new Error('Only a jeweller owner can view exposure signals.');
+        res.json(getKarigarExposureDashboard(actorId));
+    } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
+app.post('/api/karigar-floats/:floatId/settlement-drafts', (req, res) => {
+    try {
+        const draft = createFloatSettlementDraft(req.params.floatId, getUserId(req));
+        res.json(draft);
+    } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
+app.get('/api/karigar/home', (req, res) => {
+    try {
+        const actorId = getUserId(req);
+        const actor = db.prepare('SELECT id, name, role FROM users WHERE id = ?')
+            .get(actorId) as { id: string; name: string; role: string } | undefined;
+        if (!actor) throw new Error('User not found.');
+        let karigarId: string;
+        let jewellerId: string | null = null;
+        let karigar: { id: string; name: string };
+        if (actor.role === 'karigar') {
+            const requestedKarigarId = typeof req.query.karigarId === 'string'
+                ? req.query.karigarId
+                : actor.id;
+            if (requestedKarigarId !== actor.id) {
+                throw new Error('A karigar can only view his own home data.');
+            }
+            karigarId = actor.id;
+            karigar = { id: actor.id, name: actor.name };
+        } else if (actor.role === 'jeweller') {
+            const requestedKarigarId = typeof req.query.karigarId === 'string'
+                ? req.query.karigarId
+                : '';
+            if (!requestedKarigarId) throw new Error('Choose a karigar to open his slip.');
+            const target = db.prepare(`
+                SELECT id, name FROM users WHERE id = ? AND role = 'karigar'
+            `).get(requestedKarigarId) as { id: string; name: string } | undefined;
+            if (!target) throw new Error('Karigar not found.');
+            const hasPair = db.prepare(`
+                SELECT 1 FROM orders WHERE jeweller_id = ? AND karigar_id = ?
+                UNION
+                SELECT 1 FROM karigar_floats WHERE jeweller_id = ? AND karigar_id = ?
+                LIMIT 1
+            `).get(actor.id, target.id, actor.id, target.id);
+            if (!hasPair) throw new Error('You do not have a job or float with this karigar.');
+            karigarId = target.id;
+            jewellerId = actor.id;
+            karigar = target;
+        } else {
+            throw new Error('Only a karigar or his jeweller can view slip data.');
+        }
+        const asOf = now();
+        const exposure = getKarigarExposureSentence(karigarId, asOf, jewellerId ?? undefined);
+        const floats = listKarigarFloats(karigarId, jewellerId ?? undefined);
+        const orderRows = db.prepare(`
+            SELECT o.id, o.jeweller_id AS jewellerId, j.name AS jewellerName,
+                o.description, o.due_date AS dueDate
+            FROM orders o
+            JOIN users j ON j.id = o.jeweller_id
+            WHERE o.karigar_id = ? AND o.status = 'open'
+                AND (? IS NULL OR o.jeweller_id = ?)
+                AND NOT EXISTS (SELECT 1 FROM karigar_floats f WHERE f.ledger_order_id = o.id)
+            ORDER BY o.due_date, o.id
+        `).all(karigarId, jewellerId, jewellerId) as Array<{
+            id: string;
+            jewellerId: string;
+            jewellerName: string;
+            description: string | null;
+            dueDate: string;
+        }>;
+        const openJobs = orderRows.map((order) => {
+            const replay = replayAndVerifyOrder(order.id, asOf);
+            if (!replay.isValidChain) throw new Error(`Ledger replay failed verification for ${order.id}.`);
+            return {
+                ...order,
+                description: order.description ?? 'Gold work',
+                goldInWorkMg: replay.accountBalances.karigar_wip.grossMg,
+                dueInDays: calculateDaysUntil(order.dueDate, asOf),
+            };
+        });
+        const pendingAcknowledgements = db.prepare(`
+            SELECT e.id, e.order_id AS orderId, o.description, e.type, e.notes,
+                e.amount, e.weight_mg AS weightMg, e.created_by AS createdBy,
+                e.float_id AS floatId, e.created_at AS createdAt
+            FROM ledger_events e
+            JOIN orders o ON o.id = e.order_id
+            WHERE o.karigar_id = ? AND e.status = 'pending_ack'
+                AND e.type != 'agreement_version'
+                AND (? IS NULL OR o.jeweller_id = ?)
+                AND ((? = 'karigar' AND e.created_by != ?)
+                    OR (? = 'jeweller' AND e.created_by = ?))
+            ORDER BY e.created_at, e.rowid
+        `).all(
+            karigarId,
+            jewellerId,
+            jewellerId,
+            actor.role,
+            karigarId,
+            actor.role,
+            jewellerId,
+        ) as Array<{
+            id: string;
+            orderId: string;
+            description: string | null;
+            type: string;
+            notes: string | null;
+            amount: number;
+            weightMg: number;
+            createdBy: string;
+            floatId: string | null;
+            createdAt: string;
+        }>;
+        const goldAmountsOwed: Array<{
+            id: string;
+            orderId: string;
+            amountMg: number;
+            daysWaiting: number;
+        }> = [];
+        const slips = openJobs.map((job) => {
+            const eventRows = db.prepare(`
+                SELECT id, type, status, notes, amount,
+                    weight_mg AS weightMg, created_by AS createdBy,
+                    gross_weight_mg AS grossWeightMg,
+                    stone_weight_mg AS stoneWeightMg,
+                    other_non_gold_weight_mg AS otherNonGoldWeightMg,
+                    agreement_id AS agreementId, agreement_version AS agreementVersion,
+                    created_at AS createdAt
+                FROM ledger_events
+                WHERE order_id = ?
+                ORDER BY created_at, rowid
+            `).all(job.id) as Array<{
+                id: string;
+                type: string;
+                status: string;
+                notes: string | null;
+                amount: number;
+                weightMg: number;
+                createdBy: string;
+                grossWeightMg: number | null;
+                stoneWeightMg: number | null;
+                otherNonGoldWeightMg: number | null;
+                agreementId: string | null;
+                agreementVersion: number | null;
+                createdAt: string;
+            }>;
+            const acknowledged = eventRows.filter((event) => event.status === 'acknowledged');
+            const issues = acknowledged.filter((event) => event.type === 'issue');
+            const initialIssue = issues[0]?.weightMg ?? 0;
+            const givenAgainMg = issues.slice(1).reduce((total, event) => total + event.weightMg, 0);
+            const returnedRows = acknowledged.filter((event) =>
+                event.type === 'return' || event.type === 'scrap_entry');
+            const noteWeight = (notes: string | null, expression: RegExp): number | null => {
+                const match = notes?.match(expression);
+                return match ? Number(match[1]) : null;
+            };
+            const stoneMg = returnedRows.reduce((total, event) =>
+                total + (event.stoneWeightMg ?? noteWeight(event.notes, /stone\s+(\d+)\s+mg/i) ?? 0), 0);
+            const otherNonGoldMg = returnedRows.reduce((total, event) =>
+                total + (event.otherNonGoldWeightMg
+                    ?? noteWeight(event.notes, /other non-gold\s+(\d+)\s+mg/i)
+                    ?? 0), 0);
+            const grossReturnedMg = returnedRows.reduce((total, event) =>
+                total + (event.grossWeightMg
+                    ?? noteWeight(event.notes, /gross\s+(\d+)\s+mg/i)
+                    ?? event.weightMg), 0);
+            const processLossMg = acknowledged
+                .filter((event) => event.type === 'process_loss')
+                .reduce((total, event) => total + event.weightMg, 0);
+            const wastageMg = processLossMg > 0
+                ? Math.max(0, processLossMg - stoneMg - otherNonGoldMg)
+                : returnedRows.length > 0
+                    ? Math.max(0, initialIssue - grossReturnedMg)
+                    : 0;
+            const slip = calculateKarigarSlip({
+                issuedMg: initialIssue,
+                wastageMg,
+                stoneMg,
+                givenAgainMg,
+            });
+            const physicalReturns = eventRows.filter((event) =>
+                event.type === 'return' || event.type === 'scrap_entry');
+            const acknowledgedReturns = acknowledged.filter((event) =>
+                event.type === 'return' || event.type === 'scrap_entry');
+            const latestIssue = issues[issues.length - 1];
+            if (physicalReturns.length > 0
+                && physicalReturns.length === acknowledgedReturns.length
+                && latestIssue?.agreementId
+                && latestIssue.agreementVersion) {
+                const agreement = db.prepare(`
+                    SELECT basis FROM wastage_agreements
+                    WHERE id = ? AND version = ?
+                `).get(latestIssue.agreementId, latestIssue.agreementVersion) as { basis: string } | undefined;
+                if (agreement?.basis === 'ideal_return_buffer') {
+                    const idealReturn = calculateIdealReturn(
+                        issues.reduce((total, event) => total + event.weightMg, 0),
+                        acknowledgedReturns.reduce((total, event) => total + event.weightMg, 0),
+                        {
+                            idealReturnFactorBp: AGREEMENT_CONFIG.idealReturnFactorBp,
+                            bufferBp: AGREEMENT_CONFIG.bufferBp,
+                        },
+                    );
+                    if (idealReturn.status === 'WITHIN_BUFFER' && idealReturn.retainedGoldMg > 0) {
+                        const lastReturn = acknowledgedReturns[acknowledgedReturns.length - 1];
+                        goldAmountsOwed.push({
+                            id: `gold-wage-${job.id}`,
+                            orderId: job.id,
+                            amountMg: idealReturn.retainedGoldMg,
+                            daysWaiting: calculateAgeingDays(lastReturn.createdAt, asOf),
+                        });
+                    }
+                }
+            }
+            const pendingEvent = pendingAcknowledgements.find((event) => event.orderId === job.id);
+            const latestDisputableEvent = [...eventRows].reverse().find((event) =>
+                (event.status === 'acknowledged' || event.status === 'pending_ack')
+                && (event.weightMg !== 0 || event.amount !== 0));
+            const activeDispute = latestDisputableEvent
+                ? db.prepare(`
+                    SELECT id FROM disputes
+                    WHERE event_id = ? AND status IN ('unresolved', 'escalated', 'pending_ack')
+                `).get(latestDisputableEvent.id)
+                : null;
+            const disputeEventId = activeDispute ? null : latestDisputableEvent?.id ?? null;
+            const lastAssistedAcknowledgement = db.prepare(`
+                SELECT a.event_id AS eventId, a.assisted_by AS assistedBy,
+                    u.name AS assistedByName, a.created_at AS createdAt
+                FROM ledger_acknowledgements a
+                JOIN ledger_events e ON e.id = a.event_id
+                JOIN users u ON u.id = a.assisted_by
+                WHERE e.order_id = ? AND a.mode = 'assisted'
+                ORDER BY a.created_at DESC, a.rowid DESC LIMIT 1
+            `).get(job.id) ?? null;
+            return {
+                orderId: job.id,
+                description: job.description,
+                jewellerId: job.jewellerId,
+                jewellerName: job.jewellerName,
+                ...slip,
+                pendingAcknowledgementEventId: pendingEvent?.id ?? null,
+                disputeEventId,
+                lastAssistedAcknowledgement,
+            };
+        });
+        const dueRows = db.prepare(`
+            SELECT d.id, d.order_id AS orderId, d.jeweller_id AS jewellerId,
+                j.name AS jewellerName, d.amount_paise AS amountPaise,
+                d.pay_by_date AS payByDate, d.created_at AS createdAt
+            FROM cash_dues d
+            JOIN users j ON j.id = d.jeweller_id
+            WHERE d.karigar_id = ? AND d.status = 'open'
+                AND (? IS NULL OR d.jeweller_id = ?)
+            ORDER BY d.created_at, d.id
+        `).all(karigarId, jewellerId, jewellerId) as Array<{
+            id: string;
+            orderId: string;
+            jewellerId: string;
+            jewellerName: string;
+            amountPaise: number;
+            payByDate: string;
+            createdAt: string;
+        }>;
+        const amountsOwed = dueRows.map((due) => ({
+            ...due,
+            daysWaiting: calculateAgeingDays(due.createdAt, asOf),
+            overdueDays: Math.max(0, calculateAgeingDays(due.payByDate, asOf)),
+        }));
+        res.json({
+            actor,
+            karigar,
+            asOf: asOf.toISOString(),
+            floatRemainingMg: floats.reduce((total, float) => total + float.remainingMg, 0),
+            floats,
+            openJobs,
+            slips,
+            amountsOwed,
+            goldAmountsOwed,
+            pendingAcknowledgements,
+            exposureLevel: exposure.level,
+            exposureSignal: exposure.signal,
+            exposureSentence: exposure.sentence,
+        });
     } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 

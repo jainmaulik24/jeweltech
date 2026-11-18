@@ -61,6 +61,13 @@ export const DEADLINE_CONFIG = {
         capacityWeightBps: 5000,
         reliabilityWeightBps: 5000,
     } satisfies RescueRankingConfig,
+    rescueOptions: [
+        {
+            value: 'lend_backup_piece',
+            label: 'Lend a backup piece for the occasion',
+            draftOnly: true,
+        },
+    ],
     templates: {
         en: {
             nudge: '{name}, the customer occasion is in {daysLeft} days. Please share your work progress.',

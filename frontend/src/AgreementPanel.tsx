@@ -36,6 +36,11 @@ interface AnalysisData {
     sweepValuePaisePerFinishedGram: number;
     effectiveRatePaisePerFinishedGram: number;
     outlier: boolean;
+    retainedGoldMg: number;
+    retainedGoldValuePaise: number;
+    perPiecePayPaise: number;
+    fairPayPaise: number;
+    sample: { issuedGrossMg: number; finishedWeightMg: number };
     version: number;
     syntheticReferenceRangePaisePerGram: { min: number; max: number };
   } | null;
@@ -63,7 +68,7 @@ const text = {
     draft: 'Draft a new version',
     basis: 'Wastage basis',
     percent: 'Wastage %',
-    labour: 'Labour (Rs/g)',
+    labour: 'Cash labour (Rs/g)',
     job: 'Job type',
     sweepOwner: 'Sweepings owner',
     karigar: 'Karigar',
@@ -77,7 +82,10 @@ const text = {
     history: 'Version history',
     active: 'In force',
     fairPay: 'Fair-pay card',
-    perFinishedGram: 'Effective per finished gram',
+    perFinishedGram: 'Fair pay per finished gram',
+    retainedGold: 'Retained gold value',
+    perPiecePay: 'Buffing, cutting and polish',
+    fairPaySample: 'Fair-pay sample',
     synthetic: 'SYNTHETIC reference range',
     outlier: 'Outside reference range',
     within: 'Within reference range',
@@ -95,7 +103,7 @@ const text = {
     draft: 'ಹೊಸ ಆವೃತ್ತಿ ರಚಿಸಿ',
     basis: 'ವ್ಯರ್ಥದ ಆಧಾರ',
     percent: 'ವ್ಯರ್ಥ %',
-    labour: 'ಕೆಲಸದ ಕೂಲಿ (ರೂ/ಗ್ರಾಂ)',
+    labour: 'ನಗದು ಕೂಲಿ (ರೂ/ಗ್ರಾಂ)',
     job: 'ಕೆಲಸದ ವಿಧ',
     sweepOwner: 'ಸವೆತದ ಪುಡಿಯ ಮಾಲೀಕ',
     karigar: 'ಕಾರಿಗರ',
@@ -109,7 +117,10 @@ const text = {
     history: 'ಆವೃತ್ತಿ ಇತಿಹಾಸ',
     active: 'ಜಾರಿಯಲ್ಲಿದೆ',
     fairPay: 'ನ್ಯಾಯಯುತ ಕೂಲಿ',
-    perFinishedGram: 'ತಯಾರಾದ ಪ್ರತಿ ಗ್ರಾಂಗೆ',
+    perFinishedGram: 'ತಯಾರಾದ ಪ್ರತಿ ಗ್ರಾಂಗೆ ನ್ಯಾಯಯುತ ಕೂಲಿ',
+    retainedGold: 'ಉಳಿಸಿಕೊಂಡ ಚಿನ್ನದ ಮೌಲ್ಯ',
+    perPiecePay: 'ಬಫಿಂಗ್, ಕಟಿಂಗ್ ಮತ್ತು ಪಾಲಿಶ್',
+    fairPaySample: 'ನ್ಯಾಯಯುತ ಕೂಲಿ ಮಾದರಿ',
     synthetic: 'SYNTHETIC ಉಲ್ಲೇಖ ಮಿತಿ',
     outlier: 'ಉಲ್ಲೇಖ ಮಿತಿಯ ಹೊರಗೆ',
     within: 'ಉಲ್ಲೇಖ ಮಿತಿಯೊಳಗೆ',
@@ -156,9 +167,9 @@ export default function AgreementPanel({ orderId, userId, role, language }: Prop
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [jobType, setJobType] = useState('plain');
-  const [basis, setBasis] = useState('fine_issued');
+  const [basis, setBasis] = useState('ideal_return_buffer');
   const [wastagePercent, setWastagePercent] = useState('2.50');
-  const [labourRateRupees, setLabourRateRupees] = useState('40.00');
+  const [labourRateRupees, setLabourRateRupees] = useState('0.00');
   const [sweepOwner, setSweepOwner] = useState('karigar');
   const [karigarSweepPercent, setKarigarSweepPercent] = useState('50');
   const [cashRatePolicy, setCashRatePolicy] = useState('settlement');
@@ -369,14 +380,14 @@ export default function AgreementPanel({ orderId, userId, role, language }: Prop
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h3 className="font-black text-indigo-950">{labels.fairPay} · v{analysis.fairPay.version}</h3>
-              <p className="text-sm text-indigo-800">{labels.perFinishedGram}</p>
+              <p className="text-sm text-indigo-800">{labels.perFinishedGram}: {money(analysis.fairPay.effectiveRatePaisePerFinishedGram)}/g</p>
+              <p className="text-xs text-indigo-700">{labels.fairPaySample}: {analysis.fairPay.sample.issuedGrossMg.toLocaleString()} mg issued · {analysis.fairPay.sample.finishedWeightMg.toLocaleString()} mg returned</p>
             </div>
-            <p className="text-2xl font-black text-indigo-950">{money(analysis.fairPay.effectiveRatePaisePerFinishedGram)}/g</p>
+            <p className="text-2xl font-black text-indigo-950">{money(analysis.fairPay.fairPayPaise)}</p>
           </div>
-          <div className="mt-3 grid gap-2 text-center text-xs sm:grid-cols-3">
-            <p className="rounded-lg bg-white p-2">Labour<br /><strong>{money(analysis.fairPay.labourPaisePerFinishedGram)}</strong></p>
-            <p className="rounded-lg bg-white p-2">Allowance<br /><strong>{money(analysis.fairPay.allowanceValuePaisePerFinishedGram)}</strong></p>
-            <p className="break-words rounded-lg bg-white p-2">Estimated sweep share<br /><strong>{money(analysis.fairPay.sweepValuePaisePerFinishedGram)}</strong></p>
+          <div className="mt-3 grid gap-2 text-center text-xs sm:grid-cols-2">
+            <p className="rounded-lg bg-white p-2">{labels.retainedGold} · {analysis.fairPay.retainedGoldMg.toLocaleString()} mg<br /><strong>{money(analysis.fairPay.retainedGoldValuePaise)}</strong></p>
+            <p className="break-words rounded-lg bg-white p-2">{labels.perPiecePay}<br /><strong>{money(analysis.fairPay.perPiecePayPaise)}</strong></p>
           </div>
           <p className="mt-3 text-sm font-bold text-indigo-900">
             {labels.synthetic}: {money(analysis.fairPay.syntheticReferenceRangePaisePerGram.min)}–{money(analysis.fairPay.syntheticReferenceRangePaisePerGram.max)}/g · {analysis.fairPay.outlier ? labels.outlier : labels.within}

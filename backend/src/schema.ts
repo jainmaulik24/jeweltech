@@ -16,6 +16,7 @@ export const BasisPoints = z.number().int().min(0).max(10000);
 export const IntegerPerMille = z.number().int().min(0).max(1000);
 export const AccountTagSchema = z.enum([
     'jeweller_vault',
+    'karigar_float',
     'karigar_wip',
     'finished_goods',
     'scrap',
@@ -26,9 +27,9 @@ export type AccountTag = z.infer<typeof AccountTagSchema>;
 
 export const WastageAgreementDraftSchema = z.object({
     jobType: z.enum(JOB_TYPES),
-    basis: z.enum(AGREEMENT_BASES),
+    basis: z.enum(AGREEMENT_BASES).default('ideal_return_buffer'),
     percentBps: BasisPoints,
-    labourRatePaisePerGram: IntegerMoney,
+    labourRatePaisePerGram: IntegerMoney.default(0),
     sweepOwner: z.enum(['karigar', 'jeweller', 'split']),
     karigarSweepShareBps: BasisPoints,
     cashRatePolicy: z.enum(['issue', 'return', 'settlement']),
@@ -45,6 +46,8 @@ export const WastageAgreementDraftSchema = z.object({
 const ReturnLotInputSchema = z.object({
     weightGrams: z.string().regex(/^\d+(\.\d{1,3})?$/, 'Weight must be entered in grams to at most 3 decimal places.'),
     purityPerMille: IntegerPerMille,
+    stoneWeightGrams: z.string().regex(/^\d+(\.\d{1,3})?$/, 'Stone weight must be entered in grams to at most 3 decimal places.').optional(),
+    otherNonGoldWeightGrams: z.string().regex(/^\d+(\.\d{1,3})?$/, 'Other non-gold weight must be entered in grams to at most 3 decimal places.').optional(),
 });
 
 export const ReturnReconciliationRequestSchema = z.object({
@@ -53,6 +56,11 @@ export const ReturnReconciliationRequestSchema = z.object({
         method: z.enum(['touch', 'XRF', 'declared']),
     })).min(1),
     scrapLots: z.array(ReturnLotInputSchema).default([]),
+    pieceCounts: z.object({
+        buffing: z.number().int().nonnegative().default(0),
+        cutting: z.number().int().nonnegative().default(0),
+        polish: z.number().int().nonnegative().default(0),
+    }).default({ buffing: 0, cutting: 0, polish: 0 }),
 });
 
 export const UserSchema = z.object({
@@ -60,6 +68,11 @@ export const UserSchema = z.object({
     role: z.enum(['jeweller', 'staff', 'karigar']),
     name: z.string().min(1),
     phone: z.string().optional()
+});
+
+export const PinLoginSchema = z.object({
+    phone: z.string().trim().min(1).max(32),
+    pin: z.string().regex(/^\d{4,6}$/, 'PIN must contain 4 to 6 digits.'),
 });
 
 export const OrderSchema = z.object({
@@ -71,6 +84,8 @@ export const OrderSchema = z.object({
     dueDate: z.string(),
     occasionDate: z.string().datetime().nullable().optional(),
     jobType: z.enum(JOB_TYPES).default('plain'),
+    targetWeightMg: IntegerMg.nonnegative().optional(),
+    toleranceMg: IntegerMg.nonnegative().optional(),
 });
 
 export const CreateOrderSchema = z.object({
@@ -79,6 +94,8 @@ export const CreateOrderSchema = z.object({
     description: z.string().min(1),
     occasionDate: z.string().datetime().optional(),
     jobType: z.enum(JOB_TYPES).default('plain'),
+    targetWeightMg: IntegerMg.nonnegative().optional(),
+    toleranceMg: IntegerMg.nonnegative().optional(),
 });
 
 // RULE 3 & 4: Append-only ledger events. Workflow status is mutable, financial facts are immutable.
@@ -117,6 +134,10 @@ export const LedgerEventSchema = z.object({
     ratePolicy: z.enum(['issue', 'return', 'settlement']).nullable().default(null),
     rateSnapshotPaisePerGram: IntegerMoney.nullable().default(null),
     stage: z.string().nullable().default(null),
+    floatId: z.string().nullable().default(null),
+    grossWeightMg: IntegerMg.nonnegative().nullable().default(null),
+    stoneWeightMg: IntegerMg.nonnegative().nullable().default(null),
+    otherNonGoldWeightMg: IntegerMg.nonnegative().nullable().default(null),
 }).superRefine((event, context) => {
     if (event.type !== 'correction' && event.amount < 0) {
         context.addIssue({ code: 'custom', path: ['amount'], message: 'Only correction events may carry a signed amount.' });

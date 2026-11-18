@@ -29,6 +29,87 @@ function calculate(overrides: Partial<ReturnReconciliationInput> = {}) {
 }
 
 describe('return reconciliation calculations', () => {
+    it('returns exact ideal-buffer, karigar-retained value, short, and above-ideal outcomes', () => {
+        const idealConfig = {
+            ...config,
+            idealReturnFactorBp: 10_860,
+            bufferBp: 200,
+            simulatedRatePaisePerGram: 750_000,
+            targetWeightMg: 10_000,
+            targetToleranceMg: 100,
+        };
+        const make = (weightMg: number) => calculateReturnReconciliation({
+            issuedLots: [{ weightMg: 100_000, purityPerMille: 999 }],
+            finishedLots: [{ weightMg, purityPerMille: 916, method: 'XRF' }],
+            scrapLots: [],
+            agreement: { basis: 'ideal_return_buffer', percentBps: 0 },
+            config: idealConfig,
+        });
+
+        expect(make(107_500)).toMatchObject({
+            idealMg: 108_600,
+            minAcceptableMg: 106_428,
+            idealReturnStatus: 'WITHIN_BUFFER',
+            retainedGoldMg: 1_100,
+            retainedGoldValuePaise: 756_000,
+            unusedAllowancePolicy: 'karigar_keeps',
+        });
+        expect(make(105_000)).toMatchObject({
+            idealReturnStatus: 'SHORT',
+            shortFineMg: 1_308,
+        });
+        expect(make(109_000)).toMatchObject({
+            idealReturnStatus: 'AT_OR_ABOVE_IDEAL',
+            retainedGoldMg: 0,
+        });
+    });
+
+    it('nets stone weight from the delivered gold and flags target deviation at the simulated rate', () => {
+        const result = calculateReturnReconciliation({
+            issuedLots: [{ weightMg: 10_000, purityPerMille: 999 }],
+            finishedLots: [{
+                weightMg: 10_000,
+                stoneWeightMg: 600,
+                purityPerMille: 916,
+                method: 'XRF',
+            }],
+            scrapLots: [],
+            agreement: { basis: 'ideal_return_buffer', percentBps: 0 },
+            config: {
+                ...config,
+                idealReturnFactorBp: 10_860,
+                bufferBp: 200,
+                simulatedRatePaisePerGram: 750_000,
+                targetWeightMg: 10_000,
+                targetToleranceMg: 100,
+            },
+        });
+
+        expect(result.netGoldFinishedMg).toBe(9_400);
+        expect(result.fineFinishedMg).toBe(8_610);
+        expect(result.targetWeightDeviationMg).toBe(-600);
+        expect(result.targetWeightFlagged).toBe(true);
+        expect(result.targetWeightPriceImpactPaise).toBe(-412_500);
+
+        const overweight = calculateReturnReconciliation({
+            issuedLots: [{ weightMg: 10_000, purityPerMille: 999 }],
+            finishedLots: [{ weightMg: 10_500, purityPerMille: 916, method: 'XRF' }],
+            scrapLots: [],
+            agreement: { basis: 'ideal_return_buffer', percentBps: 0 },
+            config: {
+                ...config,
+                idealReturnFactorBp: 10_860,
+                bufferBp: 200,
+                simulatedRatePaisePerGram: 750_000,
+                targetWeightMg: 10_000,
+                targetToleranceMg: 100,
+            },
+        });
+        expect(overweight.targetWeightDeviationMg).toBe(500);
+        expect(overweight.targetWeightPriceImpactPaise).toBe(343_500);
+        expect(overweight.targetWeightFlagged).toBe(true);
+    });
+
     it('flags matched gross weight with an 8,300 mg fine-gold purity shortfall', () => {
         const result = calculate();
 
@@ -109,7 +190,7 @@ describe('return reconciliation calculations', () => {
             calculateReturnReconciliation({
                 issuedLots: [{ weightMg: 100_000, purityPerMille: 916 }],
                 finishedLots: scenario.finishedLots,
-                scrapLots: scenario.scrapLots,
+                scrapLots: scenario.scrapLots ?? [],
                 agreement: { basis: 'fine_issued', percentBps: 200 },
                 config,
             }).status
@@ -205,5 +286,58 @@ describe('return reconciliation ledger workflow', () => {
         expect(replay.accountBalances.jeweller_vault.fineMg).toBe(-85_132);
         expect(Object.values(replay.accountBalances).reduce((sum, account) => sum + account.fineMg, 0)).toBe(0);
         expect(Object.values(replay.accountBalances).reduce((sum, account) => sum + account.grossMg, 0)).toBe(0);
+    });
+
+    it('posts a flagged pending settlement draft for a return below the ideal buffer', async () => {
+        db.prepare(`
+            INSERT INTO orders
+                (id, jeweller_id, karigar_id, description, due_date, target_weight_mg, tolerance_mg)
+            VALUES ('ord-ideal-return-test', 'j1', 'k1', 'Ideal return', '2026-12-01', 108600, 100)
+        `).run();
+        db.prepare(`
+            INSERT INTO wastage_agreements
+                (id, order_id, jeweller_id, karigar_id, job_type, basis, percent_bps,
+                 labour_rate_paise_per_gram, sweep_owner, karigar_sweep_share_bps,
+                 cash_rate_policy, version, effective_at, status, accepted_at, created_at)
+            VALUES ('agr-ideal-return-test', 'ord-ideal-return-test', 'j1', 'k1', 'plain',
+                    'ideal_return_buffer', 0, 0, 'karigar', 10000, 'settlement', 1,
+                    '2026-11-16T10:00:00.000Z', 'accepted', '2026-11-16T10:00:00.000Z',
+                    '2026-11-16T10:00:00.000Z')
+        `).run();
+        appendLedgerEvent({
+            id: 'evt-ideal-return-issue',
+            orderId: 'ord-ideal-return-test',
+            type: 'issue',
+            weightMg: 100_000,
+            fineWeightMg: 99_900,
+            purityPerMille: 999,
+            status: 'acknowledged',
+            createdBy: 'j1',
+            notes: null,
+            idempotencyKey: 'ideal-return-issue',
+            agreementId: 'agr-ideal-return-test',
+            agreementVersion: 1,
+        });
+
+        const response = await request(app)
+            .post('/api/orders/ord-ideal-return-test/returns/reconcile')
+            .set('x-user-id', 'k1')
+            .send({
+                idempotencyKey: 'ideal-return-short',
+                finishedLots: [{ weightGrams: '105', purityPerMille: 916, method: 'XRF' }],
+            });
+
+        expect(response.status).toBe(200);
+        expect(response.body.result).toMatchObject({
+            idealMg: 108_600,
+            minAcceptableMg: 106_428,
+            idealReturnStatus: 'SHORT',
+            shortFineMg: 1_308,
+            targetWeightFlagged: true,
+        });
+        expect(response.body.settlementDraft).toMatchObject({ status: 'pending_ack', fineWeightMg: 1_308 });
+        expect(response.body.settlementDraft.notes).toContain('FLAGGED SETTLEMENT DRAFT · SHORT');
+        expect(response.body.events.find((event: { type: string }) => event.type === 'return').notes)
+            .toContain('TARGET WEIGHT FLAG');
     });
 });

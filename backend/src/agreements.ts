@@ -57,6 +57,7 @@ export function formatAgreementSummary(
     const percent = `${(agreement.percentBps / 100).toFixed(2)}%`;
     const rupees = `Rs ${(agreement.labourRatePaisePerGram / 100).toFixed(2)}/g`;
     const basisEnglish: Record<AgreementWastageBasis, string> = {
+        ideal_return_buffer: 'ideal 22K return with a 2% buffer',
         fine_issued: 'fine gold issued',
         gross_issued: 'gross gold issued',
         finished_weight: 'finished weight',
@@ -72,6 +73,7 @@ export function formatAgreementSummary(
             stone_set: 'ಕಲ್ಲು ಅಳವಡಿಸಿದ',
         };
         const basisKn: Record<AgreementWastageBasis, string> = {
+            ideal_return_buffer: '2% ಮಿತಿಯೊಂದಿಗೆ ಆದರ್ಶ 22K ಮರಳಿಕೆ',
             fine_issued: 'ನೀಡಿದ ಶುದ್ಧ ಚಿನ್ನದ ಮೇಲೆ',
             gross_issued: 'ನೀಡಿದ ಒಟ್ಟು ಚಿನ್ನದ ಮೇಲೆ',
             finished_weight: 'ತಯಾರಾದ ತೂಕದ ಮೇಲೆ',

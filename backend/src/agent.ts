@@ -232,7 +232,7 @@ export async function parseUtterance(text: string): Promise<any> {
             type = 'payment';
         } else if (/return|returned|received|back|ವಾಪಸ್/.test(norm)) {
             type = 'return';
-        } else if (/issue|issued|give|gave|sent|hand over|transfer|ನೀಡಿದ್ದೇನೆ|ಕೊಟ್ಟೆ|ನೀಡಿ|ಇಶ್ಯೂ/.test(norm)) {
+        } else if (/issue|issued|give|gave|sent|hand over|transfer|load(?:ed|ing)?|ನೀಡಿದ್ದೇನೆ|ಕೊಟ್ಟೆ|ನೀಡಿ|ಇಶ್ಯೂ/.test(norm)) {
             type = 'issue';
         }
 

@@ -33,6 +33,29 @@ describe('Wastage agreement calculations and handshake', () => {
         expect(computeAgreementAllowanceMg({ ...input, basis: 'fine_issued' })).toBe(550);
         expect(computeAgreementAllowanceMg({ ...input, basis: 'gross_issued' })).toBe(600);
         expect(computeAgreementAllowanceMg({ ...input, basis: 'finished_weight' })).toBe(540);
+        expect(computeAgreementAllowanceMg({
+            ...input,
+            issuedGrossMg: 100_000,
+            basis: 'ideal_return_buffer',
+            idealReturnConfig: { idealReturnFactorBp: 10_860, bufferBp: 200 },
+        })).toBe(2_172);
+    });
+
+    it('defaults new agreements to ideal-return buffer and zero cash labour', async () => {
+        const response = await request(app)
+            .post('/api/orders/ord-agreement-test/agreements')
+            .set('x-user-id', 'j1')
+            .send({
+                jobType: 'plain',
+                percentBps: 0,
+                sweepOwner: 'karigar',
+                karigarSweepShareBps: 10_000,
+                cashRatePolicy: 'settlement',
+            });
+
+        expect(response.status).toBe(200);
+        expect(response.body.agreement.basis).toBe('ideal_return_buffer');
+        expect(response.body.agreement.labourRatePaisePerGram).toBe(0);
     });
 
     it('calculates effective pay using integer paise and flags a synthetic-range outlier', () => {

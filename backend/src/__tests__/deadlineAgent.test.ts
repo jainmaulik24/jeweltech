@@ -262,6 +262,11 @@ describe('Deadline agent and custody rescue', () => {
             (action: { order_id: string; type: string }) => action.order_id === 'ord-wedding' && action.type === 'rescue_plan',
         );
         expect(plan).toBeDefined();
+        expect(JSON.parse(plan.payload_json).options).toContainEqual({
+            value: 'lend_backup_piece',
+            label: 'Lend a backup piece for the occasion',
+            draftOnly: true,
+        });
         const etaDraft = board.body.actionLog.find(
             (action: { order_id: string; type: string }) => action.order_id === 'ord-wedding' && action.type === 'customer_eta_draft',
         );

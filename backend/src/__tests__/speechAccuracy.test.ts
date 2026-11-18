@@ -11,6 +11,7 @@ const utterances = [
     { text: "issued quarter of a gram", type: "issue", mg: 250, amt: 0, conf: "high" },
     { text: "gave him one kg", type: "issue", mg: 1000000, amt: 0, conf: "high" },
     { text: "transfer 3g", type: "issue", mg: 3000, amt: 0, conf: "high" },
+    { text: "load 3500 milligrams", type: "issue", mg: 3500, amt: 0, conf: "high" },
     { text: "new order issue 8 grams", type: "issue", mg: 8000, amt: 0, conf: "high" },
     { text: "i just gave karigar 1.25 grams", type: "issue", mg: 1250, amt: 0, conf: "high" },
     // --- Returns (English) ---

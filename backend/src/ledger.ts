@@ -45,6 +45,14 @@ export function generateEventHash(event: any): string {
         ? `|${event.ratePolicy || ''}|${event.rateSnapshotPaisePerGram ?? ''}`
         : '';
     const stageFields = event.stage != null ? `|${event.stage}` : '';
+    const floatId = event.floatId ?? event.float_id;
+    const floatFields = floatId != null ? `|${floatId}` : '';
+    const grossWeightMg = event.grossWeightMg ?? event.gross_weight_mg;
+    const stoneWeightMg = event.stoneWeightMg ?? event.stone_weight_mg;
+    const otherNonGoldWeightMg = event.otherNonGoldWeightMg ?? event.other_non_gold_weight_mg;
+    const returnWeightFields = grossWeightMg != null || stoneWeightMg != null || otherNonGoldWeightMg != null
+        ? `|${grossWeightMg ?? ''}|${stoneWeightMg ?? ''}|${otherNonGoldWeightMg ?? ''}`
+        : '';
     const fineWeightMg = event.fineWeightMg ?? event.fine_weight_mg;
     const purityPerMille = event.purityPerMille ?? event.purity_per_mille;
     const debitAccount = event.debitAccount ?? event.debit_account;
@@ -52,7 +60,7 @@ export function generateEventHash(event: any): string {
     const accountingFields = fineWeightMg != null || purityPerMille != null || debitAccount != null || creditAccount != null
         ? `|${fineWeightMg ?? ''}|${purityPerMille ?? ''}|${debitAccount ?? ''}|${creditAccount ?? ''}`
         : '';
-    const payload = `${event.id}|${event.orderId}|${event.type}|${event.weightMg || 0}|${event.amount || 0}|${event.createdBy}|${event.previousHash || 'GENESIS'}${agreementFields}${rateFields}${stageFields}${accountingFields}`;
+    const payload = `${event.id}|${event.orderId}|${event.type}|${event.weightMg || 0}|${event.amount || 0}|${event.createdBy}|${event.previousHash || 'GENESIS'}${agreementFields}${rateFields}${stageFields}${accountingFields}${floatFields}${returnWeightFields}`;
     return crypto.createHash('sha256').update(payload).digest('hex');
 }
 
@@ -85,6 +93,10 @@ export function appendLedgerEvent(eventPayload: any) {
                 : toFineGoldPerMilleMg(eventPayload.weightMg ?? 0, eventPayload.purityPerMille)),
         debitAccount: eventPayload.debitAccount ?? transfer?.debitAccount ?? null,
         creditAccount: eventPayload.creditAccount ?? transfer?.creditAccount ?? null,
+        floatId: eventPayload.floatId ?? null,
+        grossWeightMg: eventPayload.grossWeightMg ?? null,
+        stoneWeightMg: eventPayload.stoneWeightMg ?? null,
+        otherNonGoldWeightMg: eventPayload.otherNonGoldWeightMg ?? null,
     };
 
     return db.transaction(() => {
@@ -102,11 +114,13 @@ export function appendLedgerEvent(eventPayload: any) {
 
         db.prepare(`
       INSERT INTO ledger_events 
-      (id, order_id, type, weight_mg, fine_weight_mg, purity_per_mille, debit_account, credit_account,
+      (id, order_id, type, weight_mg, fine_weight_mg, purity_per_mille, debit_account, credit_account, float_id,
+       gross_weight_mg, stone_weight_mg, other_non_gold_weight_mg,
        amount, status, created_by, notes, idempotency_key, previous_hash, hash, agreement_id,
        agreement_version, rate_policy, rate_snapshot_paise_per_gram, stage, created_at, acknowledged_at)
       VALUES (@id, @orderId, @type, @weightMg, @fineWeightMg, @purityPerMille, @debitAccount,
-       @creditAccount, @amount, @status, @createdBy, @notes, @idempotencyKey, @previousHash,
+       @creditAccount, @floatId, @grossWeightMg, @stoneWeightMg, @otherNonGoldWeightMg,
+       @amount, @status, @createdBy, @notes, @idempotencyKey, @previousHash,
        @hash, @agreementId, @agreementVersion, @ratePolicy, @rateSnapshotPaisePerGram, @stage, @createdAt, @acknowledgedAt)
     `).run({
             ...parsed,
@@ -137,6 +151,7 @@ export function replayAndVerifyOrder(orderId: string, evaluateAsOf: Date = now()
         netKarigarHeldMg: 0,
         accountBalances: {
             jeweller_vault: { grossMg: 0, fineMg: 0 },
+            karigar_float: { grossMg: 0, fineMg: 0 },
             karigar_wip: { grossMg: 0, fineMg: 0 },
             finished_goods: { grossMg: 0, fineMg: 0 },
             scrap: { grossMg: 0, fineMg: 0 },
@@ -168,6 +183,10 @@ export function replayAndVerifyOrder(orderId: string, evaluateAsOf: Date = now()
             purityPerMille: ev.purity_per_mille,
             debitAccount: ev.debit_account,
             creditAccount: ev.credit_account,
+            floatId: ev.float_id,
+            grossWeightMg: ev.gross_weight_mg,
+            stoneWeightMg: ev.stone_weight_mg,
+            otherNonGoldWeightMg: ev.other_non_gold_weight_mg,
         });
 
         if (ev.hash !== expectedHash || ev.previous_hash !== expectedPreviousHash) {
@@ -187,8 +206,10 @@ export function replayAndVerifyOrder(orderId: string, evaluateAsOf: Date = now()
                 credit.fineMg += ev.fine_weight_mg ?? 0;
             }
             if (ev.type === 'issue') {
-                state.issuedMg += ev.weight_mg;
-                state.netKarigarHeldMg += ev.weight_mg;
+                if (ev.credit_account !== 'karigar_float') {
+                    state.issuedMg += ev.weight_mg;
+                    state.netKarigarHeldMg += ev.weight_mg;
+                }
             }
             if (ev.type === 'return') {
                 state.returnedMg += ev.weight_mg;
@@ -233,7 +254,7 @@ export function verifyLedgerChain(orderId: string): boolean {
 /**
  * State Machine Progression: An entry isn't final without BOTH sides.
  */
-export function progressEventStatus(eventId: string, actingUserId: string, newStatus: 'acknowledged' | 'contested') {
+export function progressEventStatus(eventId: string, actingUserId: string, newStatus: 'acknowledged' | 'contested'): boolean {
     const event = db.prepare('SELECT * FROM ledger_events WHERE id = ?').get(eventId) as any;
     if (!event) throw new Error('Event not found');
 
@@ -242,6 +263,13 @@ export function progressEventStatus(eventId: string, actingUserId: string, newSt
     // 1. Data Isolation: Actor must be part of this specific order
     if (order.jeweller_id !== actingUserId && order.karigar_id !== actingUserId) {
         throw new Error('Unauthorized: You do not have access to this order');
+    }
+
+    if (newStatus === 'acknowledged' && event.status === 'acknowledged') {
+        if (event.created_by === actingUserId) {
+            throw new Error('Rule Violation: The other party must acknowledge this entry');
+        }
+        return false;
     }
 
     // 2. Dual-Party Rule: You cannot approve your own entry
@@ -261,4 +289,30 @@ export function progressEventStatus(eventId: string, actingUserId: string, newSt
     } else {
         db.prepare('UPDATE ledger_events SET status = ? WHERE id = ?').run(newStatus, eventId);
     }
+    return true;
+}
+
+export function recordLedgerAcknowledgement(
+    eventId: string,
+    acknowledgedBy: string,
+    mode: 'self' | 'assisted',
+    assistedBy: string | null = null,
+) {
+    const existing = db.prepare(`
+        SELECT id, event_id AS eventId, acknowledged_by AS acknowledgedBy,
+            assisted_by AS assistedBy, mode, created_at AS createdAt
+        FROM ledger_acknowledgements WHERE event_id = ?
+    `).get(eventId);
+    if (existing) return existing;
+
+    db.prepare(`
+        INSERT OR IGNORE INTO ledger_acknowledgements
+            (id, event_id, acknowledged_by, assisted_by, mode, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    `).run(`ack-${eventId}`, eventId, acknowledgedBy, assistedBy, mode, now().toISOString());
+    return db.prepare(`
+        SELECT id, event_id AS eventId, acknowledged_by AS acknowledgedBy,
+            assisted_by AS assistedBy, mode, created_at AS createdAt
+        FROM ledger_acknowledgements WHERE event_id = ?
+    `).get(eventId);
 }

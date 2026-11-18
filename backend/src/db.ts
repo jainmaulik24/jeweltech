@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS orders (
         due_date TEXT NOT NULL,
         occasion_date TEXT,
         job_type TEXT NOT NULL DEFAULT 'plain',
+        target_weight_mg INTEGER NOT NULL DEFAULT 10000,
+        tolerance_mg INTEGER NOT NULL DEFAULT 100,
         FOREIGN KEY (jeweller_id) REFERENCES users (id),
         FOREIGN KEY (karigar_id) REFERENCES users (id)
       );
@@ -266,6 +268,50 @@ CREATE INDEX IF NOT EXISTS idx_wastage_agreements_order_version
 
 `);
 
+db.exec(`
+    CREATE TABLE IF NOT EXISTS karigar_floats (
+        id TEXT PRIMARY KEY,
+        jeweller_id TEXT NOT NULL,
+        karigar_id TEXT NOT NULL,
+        ledger_order_id TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        UNIQUE (jeweller_id, karigar_id),
+        FOREIGN KEY (jeweller_id) REFERENCES users (id) ON DELETE CASCADE,
+        FOREIGN KEY (karigar_id) REFERENCES users (id) ON DELETE CASCADE,
+        FOREIGN KEY (ledger_order_id) REFERENCES orders (id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS owner_issue_approvals (
+        id TEXT PRIMARY KEY,
+        jeweller_id TEXT NOT NULL,
+        karigar_id TEXT NOT NULL,
+        maker_id TEXT NOT NULL,
+        order_id TEXT NOT NULL,
+        float_id TEXT,
+        debit_account TEXT,
+        credit_account TEXT,
+        weight_mg INTEGER NOT NULL CHECK (weight_mg > 0),
+        reason TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
+        requested_at TEXT NOT NULL,
+        approved_by TEXT,
+        approved_at TEXT,
+        rejected_by TEXT,
+        rejected_at TEXT,
+        ledger_event_id TEXT UNIQUE,
+        UNIQUE (maker_id, idempotency_key),
+        FOREIGN KEY (jeweller_id) REFERENCES users (id),
+        FOREIGN KEY (karigar_id) REFERENCES users (id),
+        FOREIGN KEY (maker_id) REFERENCES users (id),
+        FOREIGN KEY (order_id) REFERENCES orders (id),
+        FOREIGN KEY (float_id) REFERENCES karigar_floats (id),
+        FOREIGN KEY (approved_by) REFERENCES users (id),
+        FOREIGN KEY (ledger_event_id) REFERENCES ledger_events (id)
+    );
+`);
+
 const custodyTransferColumns = db.prepare('PRAGMA table_info(custody_transfers)').all() as Array<{ name: string }>;
 const custodyTransferMigrations: Record<string, string> = {
     stage: "TEXT NOT NULL DEFAULT 'reassignment'",
@@ -295,6 +341,12 @@ db.exec(`
   }
   if (!orderColumns.some((column) => column.name === 'job_type')) {
       db.exec("ALTER TABLE orders ADD COLUMN job_type TEXT NOT NULL DEFAULT 'plain'");
+  }
+  if (!orderColumns.some((column) => column.name === 'target_weight_mg')) {
+      db.exec('ALTER TABLE orders ADD COLUMN target_weight_mg INTEGER NOT NULL DEFAULT 10000');
+  }
+  if (!orderColumns.some((column) => column.name === 'tolerance_mg')) {
+      db.exec('ALTER TABLE orders ADD COLUMN tolerance_mg INTEGER NOT NULL DEFAULT 100');
   }
 
 const ledgerColumns = db.prepare('PRAGMA table_info(ledger_events)').all() as Array<{ name: string }>;
@@ -328,6 +380,32 @@ if (!ledgerColumns.some((column) => column.name === 'acknowledged_at')) {
 if (!ledgerColumns.some((column) => column.name === 'stage')) {
     db.exec('ALTER TABLE ledger_events ADD COLUMN stage TEXT');
 }
+if (!ledgerColumns.some((column) => column.name === 'float_id')) {
+    db.exec('ALTER TABLE ledger_events ADD COLUMN float_id TEXT');
+}
+if (!ledgerColumns.some((column) => column.name === 'gross_weight_mg')) {
+    db.exec('ALTER TABLE ledger_events ADD COLUMN gross_weight_mg INTEGER');
+}
+if (!ledgerColumns.some((column) => column.name === 'stone_weight_mg')) {
+    db.exec('ALTER TABLE ledger_events ADD COLUMN stone_weight_mg INTEGER');
+}
+if (!ledgerColumns.some((column) => column.name === 'other_non_gold_weight_mg')) {
+    db.exec('ALTER TABLE ledger_events ADD COLUMN other_non_gold_weight_mg INTEGER');
+}
+
+db.exec(`
+    CREATE TABLE IF NOT EXISTS ledger_acknowledgements (
+        id TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL UNIQUE,
+        acknowledged_by TEXT NOT NULL,
+        assisted_by TEXT,
+        mode TEXT NOT NULL CHECK (mode IN ('self', 'assisted')),
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (event_id) REFERENCES ledger_events (id) ON DELETE CASCADE,
+        FOREIGN KEY (acknowledged_by) REFERENCES users (id),
+        FOREIGN KEY (assisted_by) REFERENCES users (id)
+    );
+`);
 
 const disputeColumns = db.prepare('PRAGMA table_info(disputes)').all() as Array<{ name: string }>;
 const disputeMigrations: Record<string, string> = {

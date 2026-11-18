@@ -4,6 +4,7 @@
 import db from './db';
 import { now } from './clock';
 import { appendLedgerEvent } from './ledger';
+import { toFineGoldPerMilleMg } from './calc';
 import { formatAgreementSummary } from './agreements';
 import { AGREEMENT_CONFIG, RETURN_RECONCILIATION_CONFIG } from './agreementConfig';
 import { GOLD_AT_LARGE_CONFIG } from './goldAtLargeConfig';
@@ -13,22 +14,30 @@ import { DAILY_BRIEF_CONFIG } from './dailyBriefConfig';
 import { DISPUTE_CONFIG } from './disputeConfig';
 import { GOLD_JOURNEY_CONFIG } from './goldJourneyConfig';
 import { acknowledgeCustodyTransfer, transferCustody } from './deadlineAgent';
+import { KARIGAR_FLOAT_CONFIG } from './karigarFloatConfig';
+import { KARIGAR_EXPOSURE_CONFIG } from './karigarExposureConfig';
 
 console.log('🌱 Starting DB seed...');
 
 // Clear existing data safely
 db.exec(`
   DELETE FROM daily_briefs; DELETE FROM deadline_actions; DELETE FROM custody_transfers; DELETE FROM cash_dues;
+  DELETE FROM owner_issue_approvals; DELETE FROM karigar_floats;
   DELETE FROM karigar_profiles; DELETE FROM staff_profiles;
   DELETE FROM dispute_evidence; DELETE FROM dispute_actions; DELETE FROM dispute_carries;
   DELETE FROM nudges; DELETE FROM consents; DELETE FROM disputes;
   DELETE FROM wastage_agreements; DELETE FROM ledger_events; DELETE FROM orders; DELETE FROM users;
 `);
 
-const insertUser = db.prepare('INSERT INTO users (id, role, name) VALUES (?, ?, ?)');
+const insertUser = db.prepare('INSERT INTO users (id, role, name, phone, pin) VALUES (?, ?, ?, ?, ?)');
 
 // FIX IS HERE: Added due_date to the SQL string
 const insertOrder = db.prepare('INSERT INTO orders (id, jeweller_id, karigar_id, description, due_date) VALUES (?, ?, ?, ?, ?)');
+const insertTargetOrder = db.prepare(`
+    INSERT INTO orders
+        (id, jeweller_id, karigar_id, description, due_date, target_weight_mg, tolerance_mg)
+    VALUES (?, 'j1', 'k1', ?, ?, ?, ?)
+`);
 const insertOccasionOrder = db.prepare(`
     INSERT INTO orders (id, jeweller_id, karigar_id, description, due_date, occasion_date, job_type)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -43,13 +52,19 @@ const appendAt = (date: Date, event: Parameters<typeof appendLedgerEvent>[0]) =>
 const seed = db.transaction(() => {
     // 1. Create 2 Jewellers
     const jewellers = ['j1', 'j2'];
-    insertUser.run('j1', 'jeweller', 'Sri Raj Jewellers');
-    insertUser.run('j2', 'jeweller', 'Laxmi Gold Palace');
-    insertUser.run('s1', 'staff', 'Sample Staff');
+    insertUser.run('j1', 'jeweller', 'Sri Raj Jewellers', '111', '1234');
+    insertUser.run('j2', 'jeweller', 'Laxmi Gold Palace', '222', '1234');
+    insertUser.run('s1', 'staff', 'Sample Staff', '777', '1234');
 
     // 2. Create 6 Karigars
     const karigars = ['k1', 'k2', 'k3', 'k4', 'k5', 'k6'];
-    karigars.forEach((id, index) => insertUser.run(id, 'karigar', id === 'k1' ? 'Ramesh' : `Karigar ${index + 1}`));
+    karigars.forEach((id, index) => insertUser.run(
+        id,
+        'karigar',
+        id === 'k1' ? 'Ramesh' : `Karigar ${index + 1}`,
+        String(333 + index),
+        '1234',
+    ));
     const insertKarigarProfile = db.prepare(`
         INSERT INTO karigar_profiles
             (user_id, language, capacity_open_jobs, specializations_json, completed_jobs, on_time_jobs)
@@ -78,6 +93,240 @@ const seed = db.transaction(() => {
 
         // FIX IS HERE: Passed the dueDate variable into the run command
         insertOrder.run(`ord-${i}`, jId, kId, `Making 2 Gold Bangles - Batch ${i}`, dueDate);
+    }
+
+    const karigarSlipScenario = {
+        name: 'Ramesh paper-slip examples',
+        accountOrderId: 'ord-slip-ramesh-account',
+        stoneOrderId: 'ord-slip-ramesh-stone',
+        issuedMg: 10_000,
+        wastageMg: 600,
+        stoneMg: 600,
+        givenAgainMg: 500,
+    };
+    insertOrder.run(
+        karigarSlipScenario.accountOrderId,
+        'j1',
+        'k1',
+        'SYNTHETIC paper slip · repeat issue example',
+        dueDate,
+    );
+    appendAt(seedTime, {
+        id: 'evt-slip-ramesh-issued',
+        orderId: karigarSlipScenario.accountOrderId,
+        type: 'issue',
+        weightMg: karigarSlipScenario.issuedMg,
+        purityPerMille: 999,
+        status: 'acknowledged',
+        createdBy: 'j1',
+        notes: 'SYNTHETIC paper-slip starting issue.',
+        idempotencyKey: 'slip-ramesh-issued',
+    });
+    appendAt(seedTime, {
+        id: 'evt-slip-ramesh-wastage',
+        orderId: karigarSlipScenario.accountOrderId,
+        type: 'process_loss',
+        weightMg: karigarSlipScenario.wastageMg,
+        fineWeightMg: toFineGoldPerMilleMg(karigarSlipScenario.wastageMg, 999),
+        purityPerMille: 999,
+        status: 'acknowledged',
+        createdBy: 'j1',
+        notes: 'SYNTHETIC paper-slip wastage example.',
+        idempotencyKey: 'slip-ramesh-wastage',
+    });
+    appendAt(seedTime, {
+        id: 'evt-slip-ramesh-refill',
+        orderId: karigarSlipScenario.accountOrderId,
+        type: 'issue',
+        weightMg: karigarSlipScenario.givenAgainMg,
+        purityPerMille: 999,
+        status: 'acknowledged',
+        createdBy: 'j1',
+        notes: 'SYNTHETIC additional gold given again.',
+        idempotencyKey: 'slip-ramesh-refill',
+    });
+    insertOrder.run(
+        karigarSlipScenario.stoneOrderId,
+        'j1',
+        'k1',
+        'SYNTHETIC stone-set paper slip',
+        dueDate,
+    );
+    appendAt(seedTime, {
+        id: 'evt-slip-ramesh-stone-issued',
+        orderId: karigarSlipScenario.stoneOrderId,
+        type: 'issue',
+        weightMg: karigarSlipScenario.issuedMg,
+        purityPerMille: 916,
+        status: 'acknowledged',
+        createdBy: 'j1',
+        notes: 'SYNTHETIC stone-set starting issue.',
+        idempotencyKey: 'slip-ramesh-stone-issued',
+    });
+    appendAt(seedTime, {
+        id: 'evt-slip-ramesh-stone-return',
+        orderId: karigarSlipScenario.stoneOrderId,
+        type: 'return',
+        weightMg: 9_400,
+        purityPerMille: 916,
+        grossWeightMg: karigarSlipScenario.issuedMg,
+        stoneWeightMg: karigarSlipScenario.stoneMg,
+        otherNonGoldWeightMg: 0,
+        status: 'acknowledged',
+        createdBy: 'k1',
+        notes: 'SYNTHETIC gross 10000 mg; stone 600 mg; net gold 9400 mg.',
+        idempotencyKey: 'slip-ramesh-stone-return',
+    });
+    appendAt(seedTime, {
+        id: 'evt-slip-ramesh-stone-loss',
+        orderId: karigarSlipScenario.stoneOrderId,
+        type: 'process_loss',
+        weightMg: karigarSlipScenario.stoneMg,
+        fineWeightMg: toFineGoldPerMilleMg(karigarSlipScenario.stoneMg, 916),
+        purityPerMille: 916,
+        status: 'acknowledged',
+        createdBy: 'j1',
+        notes: 'SYNTHETIC process-loss posting for the stone-set example.',
+        idempotencyKey: 'slip-ramesh-stone-loss',
+    });
+
+    const floatDemo = KARIGAR_FLOAT_CONFIG.demo;
+    db.prepare(`
+        INSERT INTO orders
+            (id, jeweller_id, karigar_id, description, status, due_date, job_type, target_weight_mg, tolerance_mg)
+        VALUES (?, ?, ?, 'Gold float account · Ramesh', 'closed', ?, 'plain', 0, 0)
+    `).run(floatDemo.ledgerOrderId, floatDemo.jewellerId, floatDemo.karigarId, dueDate);
+    db.prepare(`
+        INSERT INTO karigar_floats (id, jeweller_id, karigar_id, ledger_order_id, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    `).run(
+        floatDemo.floatId,
+        floatDemo.jewellerId,
+        floatDemo.karigarId,
+        floatDemo.ledgerOrderId,
+        seedTime.toISOString(),
+    );
+    appendLedgerEvent({
+        id: 'evt-float-demo-issue',
+        orderId: floatDemo.ledgerOrderId,
+        type: 'issue',
+        weightMg: floatDemo.weightMg,
+        purityPerMille: floatDemo.purityPerMille,
+        debitAccount: 'jeweller_vault',
+        creditAccount: 'karigar_float',
+        floatId: floatDemo.floatId,
+        status: 'acknowledged',
+        createdBy: floatDemo.jewellerId,
+        notes: 'SIMULATED 100 g 24K karigar float; three sample jobs draw from this balance.',
+        idempotencyKey: 'float-demo-issue-100g',
+    });
+    floatDemo.draws.forEach((draw, index) => {
+        insertOrder.run(draw.orderId, floatDemo.jewellerId, floatDemo.karigarId, draw.description, dueDate);
+        appendLedgerEvent({
+            id: `evt-float-demo-draw-${index + 1}`,
+            orderId: draw.orderId,
+            type: 'issue',
+            weightMg: draw.weightMg,
+            purityPerMille: floatDemo.purityPerMille,
+            debitAccount: 'karigar_float',
+            creditAccount: 'karigar_wip',
+            floatId: floatDemo.floatId,
+            status: 'acknowledged',
+            createdBy: floatDemo.jewellerId,
+            notes: 'SIMULATED draw-down from Ramesh’s seeded karigar float.',
+            idempotencyKey: `float-demo-draw-${index + 1}`,
+        });
+    });
+
+    const exposureScenario = KARIGAR_EXPOSURE_CONFIG.demoScenario;
+    const exposureStart = new Date(seedTime.getTime() - (KARIGAR_EXPOSURE_CONFIG.replay.days - 1) * 86_400_000);
+    const exposureFloatCreatedAt = exposureStart.toISOString();
+    const exposureDueDate = new Date(seedTime.getTime() - 2 * 86_400_000).toISOString();
+    db.prepare(`
+        INSERT INTO orders
+            (id, jeweller_id, karigar_id, description, status, due_date, job_type, target_weight_mg, tolerance_mg)
+        VALUES (?, ?, ?, 'SYNTHETIC float replay account', 'closed', ?, 'plain', 0, 0)
+    `).run(
+        exposureScenario.floatOrderId,
+        exposureScenario.jewellerId,
+        exposureScenario.karigarId,
+        exposureFloatCreatedAt,
+    );
+    db.prepare(`
+        INSERT INTO karigar_floats (id, jeweller_id, karigar_id, ledger_order_id, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    `).run(
+        exposureScenario.floatId,
+        exposureScenario.jewellerId,
+        exposureScenario.karigarId,
+        exposureScenario.floatOrderId,
+        exposureFloatCreatedAt,
+    );
+    insertOrder.run(
+        exposureScenario.workOrderId,
+        exposureScenario.jewellerId,
+        exposureScenario.karigarId,
+        exposureScenario.name,
+        exposureDueDate,
+    );
+    appendAt(exposureStart, {
+        id: 'evt-exposure-replay-opening-float',
+        orderId: exposureScenario.floatOrderId,
+        type: 'issue',
+        weightMg: exposureScenario.openingFloatMg,
+        purityPerMille: 999,
+        debitAccount: 'jeweller_vault',
+        creditAccount: 'karigar_float',
+        floatId: exposureScenario.floatId,
+        status: 'acknowledged',
+        createdBy: exposureScenario.jewellerId,
+        notes: `SYNTHETIC replay opening float for ${exposureScenario.name}.`,
+        idempotencyKey: 'exposure-replay-opening-float',
+    });
+    for (const [index, stage] of exposureScenario.stages.entries()) {
+        const stageDate = new Date(exposureStart.getTime() + stage.day * 86_400_000);
+        const stageKey = `exposure-replay-stage-${index + 1}`;
+        appendAt(stageDate, {
+            id: `evt-${stageKey}-topup`,
+            orderId: exposureScenario.floatOrderId,
+            type: 'issue',
+            weightMg: stage.issueMg,
+            purityPerMille: 999,
+            debitAccount: 'jeweller_vault',
+            creditAccount: 'karigar_float',
+            floatId: exposureScenario.floatId,
+            status: 'acknowledged',
+            createdBy: exposureScenario.jewellerId,
+            notes: `SYNTHETIC replay float top-up for ${exposureScenario.name}.`,
+            idempotencyKey: `${stageKey}-topup`,
+        });
+        appendAt(stageDate, {
+            id: `evt-${stageKey}-draw`,
+            orderId: exposureScenario.workOrderId,
+            type: 'issue',
+            weightMg: stage.issueMg,
+            purityPerMille: 999,
+            debitAccount: 'karigar_float',
+            creditAccount: 'karigar_wip',
+            floatId: exposureScenario.floatId,
+            status: 'acknowledged',
+            createdBy: exposureScenario.jewellerId,
+            notes: `SYNTHETIC replay draw from float for ${exposureScenario.name}.`,
+            idempotencyKey: `${stageKey}-draw`,
+        });
+        if (stage.returnMg > 0) {
+            appendAt(stageDate, {
+                id: `evt-${stageKey}-return`,
+                orderId: exposureScenario.workOrderId,
+                type: 'return',
+                weightMg: stage.returnMg,
+                purityPerMille: 916,
+                status: 'acknowledged',
+                createdBy: exposureScenario.jewellerId,
+                notes: `SYNTHETIC replay return for ${exposureScenario.name}.`,
+                idempotencyKey: `${stageKey}-return`,
+            });
+        }
     }
 
     insertOrder.run('ord-handshake-demo', 'j1', 'k1', 'Plain gold bangles - Agreement sample', dueDate);
@@ -459,6 +708,76 @@ const seed = db.transaction(() => {
         });
     });
 
+    RETURN_RECONCILIATION_CONFIG.idealReturnScenarios.forEach((scenario) => {
+        insertTargetOrder.run(
+            scenario.orderId,
+            scenario.description,
+            dueDate,
+            scenario.targetWeightMg ?? RETURN_RECONCILIATION_CONFIG.targetWeightMg,
+            RETURN_RECONCILIATION_CONFIG.targetToleranceMg,
+        );
+        const agreementId = `agr-${scenario.orderId}-v1`;
+        const agreementTime = seedTime.toISOString();
+        db.prepare(`
+            INSERT INTO wastage_agreements
+                (id, order_id, jeweller_id, karigar_id, job_type, basis, percent_bps,
+                 labour_rate_paise_per_gram, sweep_owner, karigar_sweep_share_bps,
+                 cash_rate_policy, version, effective_at, status, accepted_at, created_at)
+            VALUES (?, ?, 'j1', 'k1', 'stone_set', 'ideal_return_buffer', 0,
+                    0, 'karigar', 10000, 'settlement', 1, ?, 'accepted', ?, ?)
+        `).run(agreementId, scenario.orderId, agreementTime, agreementTime, agreementTime);
+        const agreement = {
+            id: agreementId,
+            orderId: scenario.orderId,
+            jobType: 'stone_set' as const,
+            basis: 'ideal_return_buffer' as const,
+            percentBps: 0,
+            labourRatePaisePerGram: 0,
+            sweepOwner: 'karigar' as const,
+            karigarSweepShareBps: 10000,
+            version: 1,
+        };
+        appendLedgerEvent({
+            id: `evt-${scenario.orderId}-agreement`,
+            orderId: scenario.orderId,
+            type: 'agreement_version',
+            weightMg: 0,
+            status: 'acknowledged',
+            createdBy: 'j1',
+            notes: JSON.stringify({ agreement, summary: formatAgreementSummary(agreement, 'Ramesh') }),
+            idempotencyKey: `${scenario.orderId}-agreement-v1`,
+            agreementId,
+            agreementVersion: 1,
+        });
+        appendLedgerEvent({
+            id: `evt-${scenario.orderId}-agreement-ack`,
+            orderId: scenario.orderId,
+            type: 'agreement_acknowledgement',
+            weightMg: 0,
+            status: 'acknowledged',
+            createdBy: 'k1',
+            notes: JSON.stringify({ agreementId, version: 1, acceptedAt: agreementTime }),
+            idempotencyKey: `${scenario.orderId}-agreement-ack-v1`,
+            agreementId,
+            agreementVersion: 1,
+        });
+        appendLedgerEvent({
+            id: `evt-${scenario.orderId}-issue`,
+            orderId: scenario.orderId,
+            type: 'issue',
+            weightMg: scenario.issuedGrossMg ?? 100_000,
+            purityPerMille: scenario.issuedPurityPerMille ?? 999,
+            status: 'acknowledged',
+            createdBy: 'j1',
+            notes: `SIMULATED issue · ${scenario.label}`,
+            idempotencyKey: `${scenario.orderId}-issue`,
+            agreementId,
+            agreementVersion: 1,
+            ratePolicy: 'issue',
+            rateSnapshotPaisePerGram: AGREEMENT_CONFIG.demo.simulatedRatesPaisePerGram.issue,
+        });
+    });
+
     const insertBoardAgreement = db.prepare(`
         INSERT INTO wastage_agreements
         (id, order_id, jeweller_id, karigar_id, job_type, basis, percent_bps,
@@ -609,4 +928,4 @@ const seed = db.transaction(() => {
 });
 
 seed();
-console.log('✅ Seed complete! Added users, sample jobs, dispute review, daily brief, deadline rescue, overdue dues, and gold-at-large scenarios.');
+console.log('✅ Seed complete! Added users, sample jobs, Ramesh paper-slip examples, dispute review, daily brief, deadline rescue, overdue dues, and gold-at-large scenarios.');

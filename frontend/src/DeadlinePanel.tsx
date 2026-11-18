@@ -70,6 +70,12 @@ interface RescueCandidate {
   reasons: string[];
 }
 
+interface RescueOption {
+  value: string;
+  label: string;
+  draftOnly: boolean;
+}
+
 const money = (paise: number) => new Intl.NumberFormat('en-IN', {
   style: 'currency',
   currency: 'INR',
@@ -97,6 +103,12 @@ function parseCandidates(action: DeadlineAction | undefined): RescueCandidate[] 
   if (!action?.payload_json) return [];
   const payload = JSON.parse(action.payload_json) as { candidates?: RescueCandidate[] };
   return payload.candidates ?? [];
+}
+
+function parseRescueOptions(action: DeadlineAction | undefined): RescueOption[] {
+  if (!action?.payload_json) return [];
+  const payload = JSON.parse(action.payload_json) as { options?: RescueOption[] };
+  return payload.options ?? [];
 }
 
 interface Props {
@@ -203,7 +215,9 @@ export default function DeadlinePanel({ userId, role }: Props) {
         {board.orders.length === 0 ? (
           <p className="text-sm text-gray-600">No customer-occasion jobs need deadline tracking.</p>
         ) : board.orders.map((order) => {
-          const candidates = parseCandidates(rescueActionFor(order.id));
+          const rescueAction = rescueActionFor(order.id);
+          const candidates = parseCandidates(rescueAction);
+          const rescueOptions = parseRescueOptions(rescueAction);
           const transferExists = board.custodyTransfers.some((transfer) => transfer.order_id === order.id);
           const progressPercent = Math.min(100, Math.floor(order.stageProgressBps / 100));
           return (
@@ -270,6 +284,12 @@ export default function DeadlinePanel({ userId, role }: Props) {
                   ))}
                 </div>
               )}
+              {role === 'jeweller' && rescueOptions.map((option) => (
+                <div key={option.value} className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                  <p className="font-bold text-amber-950">{option.label}</p>
+                  {option.draftOnly && <p className="text-xs text-amber-900">Draft option only · no piece is lent automatically.</p>}
+                </div>
+              ))}
             </article>
           );
         })}

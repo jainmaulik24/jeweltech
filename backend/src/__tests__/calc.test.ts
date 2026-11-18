@@ -9,11 +9,55 @@ import {
     calculateDisputeHistoryTotals,
     calculateSignedFineGoldMg,
     calculateGoldJourneyLoss,
+    calculateNetGoldMg,
+    calculateIdealReturn,
+    calculateFairPayPaise,
     DEFAULT_CALC_CONFIG,
     CalcConfig,
 } from '../calc';
 
 describe('Chunk 2: Pure Calculation Library', () => {
+    describe('Ideal return and net gold', () => {
+        it('uses integer half-up milligrams for the 24K-to-22K ideal and buffer', () => {
+            expect(calculateIdealReturn(100_000, undefined, {
+                idealReturnFactorBp: 10_860,
+                bufferBp: 200,
+            })).toMatchObject({
+                idealMg: 108_600,
+                minAcceptableMg: 106_428,
+            });
+        });
+
+        it('classifies returns and retains the unused ideal allowance only within buffer', () => {
+            const config = { idealReturnFactorBp: 10_860, bufferBp: 200 };
+            const within = calculateIdealReturn(100_000, 107_500, config);
+            const short = calculateIdealReturn(100_000, 105_000, config);
+            const above = calculateIdealReturn(100_000, 109_000, config);
+
+            expect(within).toMatchObject({ status: 'WITHIN_BUFFER', retainedGoldMg: 1_100 });
+            expect(short).toMatchObject({ status: 'SHORT', retainedGoldMg: 0 });
+            expect(above).toMatchObject({ status: 'AT_OR_ABOVE_IDEAL', retainedGoldMg: 0 });
+        });
+
+        it('subtracts stones and other non-gold weight before valuing gold', () => {
+            expect(calculateNetGoldMg(10_000, 600, 0)).toBe(9_400);
+        });
+
+        it('values retained gold at 916 and adds configured per-piece pay', () => {
+            expect(calculateFairPayPaise({
+                retainedGoldMg: 1_100,
+                goldPurityPerMille: 916,
+                simulatedRatePaisePerGram: 750_000,
+                pieceCounts: { buffing: 1, cutting: 2, polish: 1 },
+                perPiecePayPaise: { buffing: 100, cutting: 200, polish: 300 },
+            })).toEqual({
+                retainedGoldValuePaise: 756_000,
+                perPiecePayPaise: 800,
+                fairPayPaise: 756_800,
+            });
+        });
+    });
+
     describe('Gold journey loss', () => {
         it('calculates gross and fine loss from sender and receiver purity weigh-ins', () => {
             expect(calculateGoldJourneyLoss({

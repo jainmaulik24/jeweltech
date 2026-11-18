@@ -272,7 +272,7 @@ function createRescuePlan(order: DeadlineOrderRow, at: Date): { candidates: Retu
         what: 'Drafted ranked rescue plan',
         why: `The deadline nudge received no reply within ${DEADLINE_CONFIG.silenceHours} hours.`,
         message: candidates.length > 0 ? 'Review and choose an alternate karigar.' : 'No eligible alternate karigar is available.',
-        payload: { candidates },
+        payload: { candidates, options: DEADLINE_CONFIG.rescueOptions },
         idempotencyKey: `deadline:${order.id}:rescue-plan`,
         createdAt: at,
     });

@@ -21,6 +21,11 @@ describe('Chunk 5: API Layer & Agent Tools', () => {
         });
         expect(orderRes.status).toBe(200);
         const orderId = orderRes.body.id;
+        const orderTargets = db.prepare(`
+            SELECT target_weight_mg AS targetWeightMg, tolerance_mg AS toleranceMg
+            FROM orders WHERE id = ?
+        `).get(orderId);
+        expect(orderTargets).toEqual({ targetWeightMg: 10_000, toleranceMg: 100 });
 
         // 2. Jeweller issues gold (Tool: recordLedgerEvent)
         const issueRes = await request(app)
@@ -34,6 +39,14 @@ describe('Chunk 5: API Layer & Agent Tools', () => {
             });
         expect(issueRes.status).toBe(200);
         const eventId = issueRes.body.id;
+
+        const karigarInbox = await request(app)
+            .get('/api/notifications/pending')
+            .set('x-user-id', 'k1');
+        expect(karigarInbox.status).toBe(200);
+        expect(karigarInbox.body.events).toEqual([
+            expect.objectContaining({ id: eventId, orderId, type: 'issue', weightMg: 15_000 }),
+        ]);
 
         // 3. Karigar acknowledges receipt (Tool: acknowledgeEvent)
         const ackRes = await request(app)

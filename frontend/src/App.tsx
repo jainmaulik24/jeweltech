@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Volume2, CheckCircle, PlusCircle, LogOut, Globe, FileText, Banknote, Mic } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { CheckCircle, PlusCircle, LogOut, Globe, FileText, Banknote, Mic } from 'lucide-react';
 import { useSpeech } from './hooks/useSpeech';
 import AgreementPanel from './AgreementPanel';
 import ReturnReconciliationPanel from './ReturnReconciliationPanel';
@@ -9,47 +9,10 @@ import DailyBriefPanel from './DailyBriefPanel';
 import type { DailyBriefItem } from './DailyBriefPanel';
 import DisputePanel from './DisputePanel';
 import GoldJourneyPanel from './GoldJourneyPanel';
-
-const dict = {
-  en: {
-    login: 'Login to Jeweltech',
-    jewellerView: 'Jeweller Dashboard',
-    karigarView: 'Karigar Dashboard',
-    issueGoldTo: 'Issue Gold (5000 mg)',
-    createOrder: 'Create New Order',
-    generateSettlement: 'Generate Settlement',
-    sendProposal: 'Send Proposal to Karigar',
-    simulatePayment: 'Simulate Payment (₹)',
-    ack: 'Acknowledge',
-    balance: 'Outstanding Gold',
-    mg: 'mg',
-    pendingLabel: 'Pending Approval:',
-    readAloud: 'Read Aloud',
-    sampleJobs: 'Sample jobs',
-    changeJob: 'Change job',
-    currentOrder: 'Current order',
-    loadingSamples: 'Loading sample jobs…'
-  },
-  kn: {
-    login: 'ಜ್ಯುವೆಲ್ಟೆಕ್ ಲಾಗಿನ್',
-    jewellerView: 'ಮಾಲೀಕರ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್',
-    karigarView: 'ಕಾರಿಗರ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್',
-    issueGoldTo: 'ಚಿನ್ನ ನೀಡಿ (5000 ಮಿ.ಗ್ರಾಂ)',
-    createOrder: 'ಹೊಸ ಆರ್ಡರ್ ರಚಿಸಿ',
-    generateSettlement: 'ಸೆಟಲ್ಮೆಂಟ್ ರಚಿಸಿ',
-    sendProposal: 'ಪ್ರಸ್ತಾವನೆ ಕಳುಹಿಸಿ',
-    simulatePayment: 'ಪಾವತಿ ಸಿಮ್ಯುಲೇಟ್ ಮಾಡಿ (₹)',
-    ack: 'ಒಪ್ಪಿಕೊಳ್ಳಿ',
-    balance: 'ಬಾಕಿ ಚಿನ್ನ',
-    mg: 'ಮಿ.ಗ್ರಾಂ',
-    pendingLabel: 'ಅನುಮೋದನೆಗಾಗಿ ಕಾಯುತ್ತಿದೆ:',
-    readAloud: 'ಓದಿ ಹೇಳಿ',
-    sampleJobs: 'ಮಾದರಿ ಕೆಲಸಗಳು',
-    changeJob: 'ಕೆಲಸ ಬದಲಿಸಿ',
-    currentOrder: 'ಪ್ರಸ್ತುತ ಆರ್ಡರ್',
-    loadingSamples: 'ಮಾದರಿ ಕೆಲಸಗಳನ್ನು ಲೋಡ್ ಮಾಡಲಾಗುತ್ತಿದೆ…'
-  }
-};
+import KarigarFloatPanel from './KarigarFloatPanel';
+import PinLogin, { type LoginUser } from './PinLogin';
+import KarigarSlipDashboard from './KarigarSlipDashboard';
+import { localeText, type LocaleCode } from './locales';
 
 const formatPaise = (paise: number) => new Intl.NumberFormat('en-IN', {
   style: 'currency',
@@ -66,11 +29,18 @@ interface DemoOrder {
 
 interface PendingEvent {
   id: string;
+  orderId?: string;
+  description?: string;
   type: string;
   notes: string | null;
   amount: number;
   weightMg: number;
   createdBy: string;
+}
+
+interface InboxEvent extends PendingEvent {
+  orderId: string;
+  description: string;
 }
 
 // Local deterministic parser fallback so voice entry never fails if backend isn't restarted
@@ -130,7 +100,7 @@ function localParseUtterance(text: string) {
     type = 'payment';
   } else if (/return|returned|received|back|ವಾಪಸ್/.test(norm)) {
     type = 'return';
-  } else if (/issue|issued|give|given|gave|sent|hand over|transfer|ನೀಡಿದ್ದೇನೆ|ಕೊಟ್ಟೆ|ನೀಡಿ|ಇಶ್ಯೂ/.test(norm)) {
+  } else if (/issue|issued|give|given|gave|sent|hand over|transfer|load(?:ed|ing)?|ನೀಡಿದ್ದೇನೆ|ಕೊಟ್ಟೆ|ನೀಡಿ|ಇಶ್ಯೂ/.test(norm)) {
     type = 'issue';
   }
 
@@ -165,8 +135,8 @@ function localParseUtterance(text: string) {
 }
 
 export default function App() {
-  const [lang, setLang] = useState<'en' | 'kn'>('en');
-  const [user, setUser] = useState<{ id: string, role: string } | null>(null);
+  const [lang, setLang] = useState<LocaleCode>('en');
+  const [user, setUser] = useState<LoginUser | null>(null);
 
   const [activeOrderId, setActiveOrderId] = useState<string | null>(null);
   const [demoOrderState, setDemoOrderState] = useState<{ userId: string; orders: DemoOrder[] } | null>(null);
@@ -178,10 +148,12 @@ export default function App() {
     userId: string;
     events: PendingEvent[];
   } | null>(null);
+  const [inboxState, setInboxState] = useState<{ userId: string; events: InboxEvent[] } | null>(null);
   const [proposal, setProposal] = useState<{ amountDue: number, breakdown: string } | null>(null);
   const [briefTarget, setBriefTarget] = useState<{ orderId: string; eventId: string | null; category: string } | null>(null);
 
-  const t = dict[lang];
+  const t = localeText[lang].app;
+  const panelLanguage = lang === 'hi' ? 'en' : lang;
   const demoOrders = demoOrderState && user && demoOrderState.userId === user.id ? demoOrderState.orders : [];
   const activeDemoOrder = demoOrders.find((order) => order.id === activeOrderId);
   const canUseOrderPanels = user?.role === 'jeweller'
@@ -189,16 +161,20 @@ export default function App() {
   const pendingEvents = pendingEventState?.orderId === activeOrderId && pendingEventState?.userId === user?.id
     ? pendingEventState.events
     : [];
+  const inboxEvents = inboxState && inboxState.userId === user?.id ? inboxState.events : [];
 
   // --- VOICE ENTRY STATE & LOGIC ---
-  const { isListening, transcript, listen } = useSpeech(lang === 'en' ? 'en-IN' : 'kn-IN');
+  const { isListening, transcript, listen, error: speechError } = useSpeech(
+    lang === 'hi' ? 'hi-IN' : lang === 'kn' ? 'kn-IN' : 'en-IN',
+  );
   const [draftEvent, setDraftEvent] = useState<any>(null);
+  const [postingVoiceEvent, setPostingVoiceEvent] = useState(false);
 
   const speak = (text: string) => {
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = lang === 'kn' ? 'kn-IN' : 'en-IN';
+      utterance.lang = lang === 'hi' ? 'hi-IN' : lang === 'kn' ? 'kn-IN' : 'en-IN';
       window.speechSynthesis.speak(utterance);
     }
   };
@@ -244,9 +220,23 @@ export default function App() {
     return data.events;
   };
 
+  const loadInboxEvents = useCallback(async (userId: string): Promise<InboxEvent[]> => {
+    const response = await fetch('/api/notifications/pending', {
+      headers: { 'x-user-id': userId },
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error ?? 'Could not load pending notifications.');
+    return data.events;
+  }, []);
+
   const fetchPendingEvents = async (orderId: string, userId: string) => {
     const events = await loadPendingEvents(orderId, userId);
     setPendingEventState({ orderId, userId, events });
+  };
+
+  const fetchInboxEvents = async (userId: string) => {
+    const events = await loadInboxEvents(userId);
+    setInboxState({ userId, events });
   };
 
   const openBriefAction = (item: DailyBriefItem) => {
@@ -299,6 +289,27 @@ export default function App() {
   }, [user]);
 
   useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const refreshInbox = async () => {
+      try {
+        const events = await loadInboxEvents(user.id);
+        if (!cancelled) setInboxState({ userId: user.id, events });
+      } catch (loadError) {
+        if (!cancelled) {
+          setDemoError(loadError instanceof Error ? loadError.message : 'Could not load pending notifications.');
+        }
+      }
+    };
+    void refreshInbox();
+    const intervalId = window.setInterval(() => { void refreshInbox(); }, 5_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [loadInboxEvents, user]);
+
+  useEffect(() => {
     if (!user || !activeOrderId || user.role === 'staff'
       || (user.role === 'karigar' && activeDemoOrder && activeDemoOrder.karigarId !== user.id)) return;
     let cancelled = false;
@@ -330,11 +341,16 @@ export default function App() {
     }
   };
 
-  const postLedgerEvent = async (type: string, weightMg: number, amount: number = 0, notes: string | null = null) => {
+  const postLedgerEvent = async (
+    type: string,
+    weightMg: number,
+    amount: number = 0,
+    notes: string | null = null,
+  ): Promise<boolean> => {
     let targetOrderId = activeOrderId;
     if (!targetOrderId) {
       targetOrderId = await handleCreateOrder();
-      if (!targetOrderId) return;
+      if (!targetOrderId) return false;
     }
 
     const res = await fetch('/api/ledger/event', {
@@ -345,12 +361,19 @@ export default function App() {
     if (res.ok) {
       const data = await res.json();
       setProposal(null);
-      if (targetOrderId && user) await fetchPendingEvents(targetOrderId, user.id);
+      if (targetOrderId && user) {
+        await fetchPendingEvents(targetOrderId, user.id)
+          .catch((loadError: Error) => setDemoError(loadError.message));
+        await fetchInboxEvents(user.id)
+          .catch((loadError: Error) => setDemoError(loadError.message));
+      }
       const displayVal = type === 'payment' || type === 'settlement' ? formatPaise(data.amount) : `${weightMg} mg`;
       alert(`${type.toUpperCase()} (${displayVal}) sent for Karigar approval.`);
+      return true;
     } else {
       const error = await res.json();
       alert(`Could not record ${type}: ${error.error ?? 'Unknown error'}`);
+      return false;
     }
   };
 
@@ -370,6 +393,7 @@ export default function App() {
     if (res.ok) {
       if (activeOrderId && user) await fetchPendingEvents(activeOrderId, user.id);
       if (activeOrderId) fetchBalance(activeOrderId);
+      if (user) await fetchInboxEvents(user.id);
       alert('Acknowledged successfully!');
     } else {
       const error = await res.json();
@@ -377,45 +401,33 @@ export default function App() {
     }
   };
 
-  const selectUser = (nextUser: { id: string; role: string } | null) => {
+  const selectUser = (nextUser: LoginUser | null) => {
     setUser(nextUser);
     setActiveOrderId(null);
     setDemoOrderState(null);
     setPendingEventState(null);
+    setInboxState(null);
     setProposal(null);
     setBriefTarget(null);
+    setDraftEvent(null);
     setBalance(0);
     setDemoError('');
     if (!nextUser) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
   };
 
   if (!user) {
+    return <PinLogin language={lang} onLanguageChange={setLang} onLogin={selectUser} />;
+  }
+
+  if (user.role === 'karigar') {
     return (
-      <div className="max-w-md mx-auto h-screen overflow-y-auto bg-gray-50 flex flex-col justify-center p-6">
-        <div className="flex justify-end mb-8">
-          <button onClick={() => setLang(lang === 'en' ? 'kn' : 'en')} className="flex items-center gap-2 p-2 bg-gray-200 text-gray-800 rounded-full font-bold">
-            <Globe size={24} /> {lang.toUpperCase()}
-          </button>
-        </div>
-        <h1 className="text-4xl font-black text-center mb-10 text-amber-600 tracking-tight">{t.login}</h1>
-        <div className="space-y-4">
-          <button onClick={() => selectUser({ id: 'j1', role: 'jeweller' })} className="w-full py-4 bg-gray-900 text-white rounded-2xl text-xl font-bold shadow-xl active:scale-95 transition-transform">
-            Jeweller (J1)
-          </button>
-          <button onClick={() => selectUser({ id: 'k1', role: 'karigar' })} className="w-full py-4 bg-amber-600 text-white rounded-2xl text-xl font-bold shadow-xl active:scale-95 transition-transform">
-            Karigar (K1)
-          </button>
-          <button onClick={() => selectUser({ id: 'k2', role: 'karigar' })} className="w-full py-4 bg-amber-700 text-white rounded-2xl text-xl font-bold shadow-xl active:scale-95 transition-transform">
-            Karigar (K2)
-          </button>
-          <button onClick={() => selectUser({ id: 'k5', role: 'karigar' })} className="w-full py-4 bg-amber-800 text-white rounded-2xl text-xl font-bold shadow-xl active:scale-95 transition-transform">
-            Karigar (K5)
-          </button>
-          <button onClick={() => selectUser({ id: 's1', role: 'staff' })} className="w-full py-4 bg-indigo-800 text-white rounded-2xl text-xl font-bold shadow-xl active:scale-95 transition-transform">
-            Helper (S1)
-          </button>
-        </div>
-      </div>
+      <KarigarSlipDashboard
+        userId={user.id}
+        userName={user.name}
+        language={lang}
+        onLanguageChange={setLang}
+        onLogout={() => selectUser(null)}
+      />
     );
   }
 
@@ -424,7 +436,13 @@ export default function App() {
       <header className="flex items-center justify-between gap-3 bg-gray-900 p-4 text-white shadow-lg sm:p-5">
       <h2 className="min-w-0 break-words text-lg font-black tracking-wide sm:text-xl">{user.role === 'jeweller' ? t.jewellerView : user.role === 'staff' ? 'Helper View' : t.karigarView}</h2>
         <div className="flex gap-4">
-          <button onClick={() => setLang(lang === 'en' ? 'kn' : 'en')} className="hover:text-amber-400"><Globe size={24} /></button>
+          <button
+            aria-label="Change language"
+            onClick={() => setLang(lang === 'en' ? 'hi' : lang === 'hi' ? 'kn' : 'en')}
+            className="min-h-11 min-w-11 hover:text-amber-400"
+          >
+            <Globe size={24} />
+          </button>
           <button onClick={() => selectUser(null)} className="hover:text-amber-400"><LogOut size={24} /></button>
         </div>
       </header>
@@ -438,21 +456,42 @@ export default function App() {
             {user.role !== 'staff' && (
               <DailyBriefPanel
                 userId={user.id}
-                role={user.role === 'karigar' ? 'karigar' : 'jeweller'}
-                language={lang}
+                role="jeweller"
+                language={panelLanguage}
                 onOpenAction={openBriefAction}
               />
             )}
             {user.role !== 'staff' && (
-              <DashboardPanel
+              <KarigarFloatPanel
                 userId={user.id}
-                role={user.role === 'jeweller' ? 'jeweller' : 'karigar'}
-                language={lang}
+                role="jeweller"
+                language={panelLanguage}
                 onSelectOrder={(orderId) => {
                   setActiveOrderId(orderId);
                   fetchBalance(orderId);
                   setDemoError('');
                 }}
+              />
+            )}
+            {user.role !== 'staff' && (
+              <DashboardPanel
+                userId={user.id}
+                role="jeweller"
+                language={panelLanguage}
+                onSelectOrder={(orderId) => {
+                  setActiveOrderId(orderId);
+                  fetchBalance(orderId);
+                  setDemoError('');
+                }}
+              />
+            )}
+            {user.role === 'jeweller' && (
+              <KarigarSlipDashboard
+                userId={user.id}
+                userName={user.name}
+                language={lang}
+                onLanguageChange={setLang}
+                mode="assisted"
               />
             )}
             {user.role === 'staff' && (
@@ -472,9 +511,34 @@ export default function App() {
             )}
             <DeadlinePanel
               userId={user.id}
-              role={user.role === 'staff' || user.role === 'karigar' ? user.role : 'jeweller'}
+              role={user.role === 'staff' ? 'staff' : 'jeweller'}
             />
           </>
+        )}
+
+        {inboxEvents.length > 0 && (
+          <section aria-live="polite" className="space-y-2 rounded-2xl border-2 border-amber-400 bg-amber-50 p-4 text-amber-950">
+            <h2 className="font-black">Pending notifications · {inboxEvents.length}</h2>
+            <p className="text-sm font-semibold">These stay here until the event is acknowledged.</p>
+            {inboxEvents.map((event) => (
+              <button
+                key={event.id}
+                onClick={() => {
+                  setActiveOrderId(event.orderId);
+                  void fetchBalance(event.orderId);
+                  void fetchPendingEvents(event.orderId, user.id)
+                    .catch((loadError: Error) => setDemoError(loadError.message));
+                }}
+                className="w-full rounded-xl border border-amber-200 bg-white p-3 text-left"
+              >
+                <strong className="block">{event.description || 'Gold work'} · {event.type.replaceAll('_', ' ')}</strong>
+                <span className="text-sm">{event.type === 'payment' || event.type === 'settlement'
+                  ? formatPaise(event.amount)
+                  : `${event.weightMg.toLocaleString()} ${t.mg}`}</span>
+                {event.notes && <span className="mt-1 block whitespace-pre-wrap text-xs">{event.notes}</span>}
+              </button>
+            ))}
+          </section>
         )}
 
         {activeOrderId && user && (
@@ -497,12 +561,12 @@ export default function App() {
               orderId={activeOrderId}
               userId={user.id}
               role={user.role === 'jeweller' ? 'jeweller' : 'karigar'}
-              language={lang}
+              language={panelLanguage}
             />}
             {canUseOrderPanels && <ReturnReconciliationPanel
               orderId={activeOrderId}
               userId={user.id}
-              language={lang}
+              language={panelLanguage}
               onSubmitted={() => {
                 fetchBalance(activeOrderId);
                 fetchPendingEvents(activeOrderId, user.id).catch((loadError: Error) => setDemoError(loadError.message));
@@ -512,7 +576,7 @@ export default function App() {
               orderId={activeOrderId}
               userId={user.id}
               role={user.role === 'jeweller' ? 'jeweller' : 'karigar'}
-              language={lang}
+              language={panelLanguage}
               focusEventId={briefTarget?.category === 'escalated_dispute' ? briefTarget.eventId : null}
             />}
             <GoldJourneyPanel orderId={activeOrderId} userId={user.id} />
@@ -520,7 +584,7 @@ export default function App() {
         )}
 
         {/* Jeweller Controls */}
-        {user.role === 'jeweller' && pendingEvents.length === 0 && (
+        {user.role === 'jeweller' && (
           <div className="space-y-4 mt-2">
 
             {/* 1. THE MICROPHONE BUTTON */}
@@ -535,6 +599,7 @@ export default function App() {
               <p className="text-gray-500 font-medium">
                 {isListening ? 'Listening...' : (transcript ? `Heard: "${transcript}"` : 'Tap to speak ledger event')}
               </p>
+              {speechError && <p role="alert" className="mt-2 text-sm font-bold text-red-700">{speechError}</p>}
             </div>
 
             {/* 2. THE DRAFT CONFIRMATION CARD */}
@@ -549,13 +614,26 @@ export default function App() {
 
                 {draftEvent.confidence === 'high' && (
                   <button
-                    onClick={() => {
-                      postLedgerEvent(draftEvent.type, draftEvent.weightMg, draftEvent.amount, `Voice Entry: ${transcript}`);
-                      setDraftEvent(null);
+                    disabled={postingVoiceEvent}
+                    onClick={async () => {
+                      setPostingVoiceEvent(true);
+                      try {
+                        const posted = await postLedgerEvent(
+                          draftEvent.type,
+                          draftEvent.weightMg,
+                          draftEvent.amount,
+                          `Voice Entry: ${transcript}`,
+                        );
+                        if (posted) setDraftEvent(null);
+                      } catch (postError) {
+                        setDemoError(postError instanceof Error ? postError.message : 'Could not post voice entry.');
+                      } finally {
+                        setPostingVoiceEvent(false);
+                      }
                     }}
-                    className="w-full bg-green-600 text-white py-4 rounded-2xl font-bold shadow-md hover:bg-green-700"
+                    className="w-full rounded-2xl bg-green-600 py-4 font-bold text-white shadow-md hover:bg-green-700 disabled:opacity-60"
                   >
-                    Confirm & Post ({draftEvent.type === 'payment' ? `₹${draftEvent.amount.toLocaleString()}` : `${draftEvent.weightMg} mg`})
+                    {postingVoiceEvent ? 'Posting…' : `Confirm & Post (${draftEvent.type === 'payment' ? `₹${draftEvent.amount.toLocaleString()}` : `${draftEvent.weightMg} mg`})`}
                   </button>
                 )}
 
@@ -574,7 +652,8 @@ export default function App() {
               </button>
             )}
 
-            {activeOrderId && balance === 0 && !draftEvent && (
+            {activeOrderId && balance === 0 && !draftEvent
+              && !pendingEvents.some((event) => event.type === 'issue' && event.createdBy === user.id) && (
               <button onClick={() => postLedgerEvent('issue', 5000)} className="w-full flex items-center justify-center gap-3 bg-amber-500 text-white py-5 rounded-2xl text-xl font-bold shadow-md active:scale-95">
                 <PlusCircle size={28} /> {t.issueGoldTo}
               </button>
@@ -608,15 +687,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Karigar Controls */}
-        {user.role === 'karigar' && (
-          <div className="space-y-4 mt-2">
-            <button onClick={() => speak(`${t.balance} ${balance} ${t.mg}`)} className="w-full flex items-center justify-center gap-3 bg-blue-100 text-blue-900 py-5 rounded-2xl text-xl font-bold shadow-sm active:bg-blue-200">
-              <Volume2 size={28} /> {t.readAloud}
-            </button>
-          </div>
-        )}
-
         {pendingEvents.map((event) => (
           <div id={`ledger-event-${event.id}`} key={event.id} className="min-w-0 rounded-3xl border border-amber-300 bg-amber-50 p-4 text-amber-950 shadow-sm sm:p-5">
             <h3 className="break-words font-black">{t.pendingLabel} {event.type.replaceAll('_', ' ').toUpperCase()}</h3>
@@ -626,6 +696,9 @@ export default function App() {
               <p className="mt-2 break-words font-semibold">Amount: {formatPaise(event.amount)} · SIMULATED</p>
             ) : (
               <p className="mt-2 break-words font-semibold">Amount: {event.weightMg.toLocaleString()} {t.mg}</p>
+            )}
+            {(event.type === 'return' || event.type === 'issue') && event.notes && (
+              <p className="mt-2 whitespace-pre-wrap break-words text-sm font-semibold">{event.notes}</p>
             )}
             {event.createdBy === user.id ? (
               <p className="mt-3 break-words text-sm font-bold">{t.pendingLabel} awaiting the other party.</p>

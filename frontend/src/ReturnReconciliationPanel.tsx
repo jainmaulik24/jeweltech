@@ -6,12 +6,16 @@ type PurityMethod = 'touch' | 'XRF' | 'declared';
 
 interface ReturnLotForm {
   weightGrams: string;
+  stoneWeightGrams: string;
+  otherNonGoldWeightGrams: string;
   purityPerMille: string;
   method: PurityMethod;
 }
 
 interface ScrapLotForm {
   weightGrams: string;
+  stoneWeightGrams: string;
+  otherNonGoldWeightGrams: string;
   purityPerMille: string;
 }
 
@@ -20,11 +24,29 @@ interface ReturnConfiguration {
   agreement: { basis: string; percentLabel: string; version: number };
   scenario: {
     label: string;
-    finishedLots: Array<{ weightGrams: string; purityPerMille: number; method: PurityMethod }>;
-    scrapLots: Array<{ weightGrams: string; purityPerMille: number }>;
+    finishedLots: Array<{
+      weightGrams: string;
+      purityPerMille: number;
+      method: PurityMethod;
+      stoneWeightGrams?: string;
+      otherNonGoldWeightGrams?: string;
+    }>;
+    scrapLots: Array<{
+      weightGrams: string;
+      purityPerMille: number;
+      stoneWeightGrams?: string;
+      otherNonGoldWeightGrams?: string;
+    }>;
   } | null;
   configuration: {
     grossWeightToleranceMg: number;
+    idealReturnFactorBp: number;
+    bufferBp: number;
+    idealReturnPurityPerMille: number;
+    simulatedRatePaisePerGram: number;
+    targetWeightMg: number;
+    targetToleranceMg: number;
+    perPiecePayPaise: { buffing: number; cutting: number; polish: number };
     unusedAllowancePolicy: 'karigar_keeps' | 'return_to_jeweller';
     purityReadLabel: string;
     purities: Array<{ perMille: number; label: string }>;
@@ -35,6 +57,7 @@ interface ReconciliationResult {
   grossIssuedMg: number;
   fineIssuedMg: number;
   grossFinishedMg: number;
+  netGoldFinishedMg: number;
   fineFinishedMg: number;
   grossScrapMg: number;
   fineScrapMg: number;
@@ -44,6 +67,18 @@ interface ReconciliationResult {
   excessFineMg: number;
   unusedAllowanceFineMg: number;
   unusedAllowancePolicy: 'karigar_keeps' | 'return_to_jeweller';
+  idealMg: number | null;
+  minAcceptableMg: number | null;
+  idealReturnStatus: 'AT_OR_ABOVE_IDEAL' | 'WITHIN_BUFFER' | 'SHORT' | null;
+  retainedGoldMg: number;
+  retainedGoldValuePaise: number;
+  shortFineMg: number;
+  targetWeightMg: number | null;
+  targetWeightDeviationMg: number | null;
+  targetWeightFlagged: boolean;
+  targetWeightPriceImpactPaise: number | null;
+  perPiecePayPaise: number;
+  fairPayPaise: number;
   status: 'WITHIN_ALLOWANCE' | 'KARIGAR_OWES' | 'PURITY_SHORTFALL' | 'EXCESS_REVIEW';
   explanation: { en: string; kn: string };
 }
@@ -80,6 +115,16 @@ const text = {
     reconcile: 'Calculate and propose',
     agreement: 'Issue is pinned to',
     tolerance: 'Gross-weight tolerance',
+    targetFlag: 'Target-weight flag',
+    targetImpact: 'SIMULATED price impact',
+    idealStatus: 'Ideal-return result',
+    retained: 'Karigar keeps',
+    fairPay: 'Fair-pay total',
+    stone: 'Stone (g)',
+    otherNonGold: 'Other non-gold (g)',
+    buffing: 'Buffing pieces',
+    cutting: 'Cutting pieces',
+    polish: 'Polish pieces',
     unused: 'Unused allowance',
     policy: 'Default: karigar keeps (UNCONFIRMED)',
     waterfall: 'Fine-gold waterfall',
@@ -113,6 +158,16 @@ const text = {
     reconcile: 'ಲೆಕ್ಕಿಸಿ ಮತ್ತು ಪ್ರಸ್ತಾಪಿಸಿ',
     agreement: 'ನೀಡಿದ ಚಿನ್ನಕ್ಕೆ ಅನ್ವಯಿಸುವುದು',
     tolerance: 'ಒಟ್ಟು ತೂಕದ ಸಹಿಷ್ಣುತೆ',
+    targetFlag: 'ಗುರಿ ತೂಕದ ಸೂಚನೆ',
+    targetImpact: 'SIMULATED ಬೆಲೆ ಪರಿಣಾಮ',
+    idealStatus: 'ಆದರ್ಶ ಮರಳಿಕೆ ಫಲಿತಾಂಶ',
+    retained: 'ಕಾರಿಗರರು ಉಳಿಸಿಕೊಳ್ಳುವುದು',
+    fairPay: 'ನ್ಯಾಯಯುತ ಕೂಲಿ ಒಟ್ಟು',
+    stone: 'ಕಲ್ಲು (ಗ್ರಾಂ)',
+    otherNonGold: 'ಇತರೆ ಚಿನ್ನವಲ್ಲದದ್ದು (ಗ್ರಾಂ)',
+    buffing: 'ಬಫಿಂಗ್ ತುಣುಕುಗಳು',
+    cutting: 'ಕಟಿಂಗ್ ತುಣುಕುಗಳು',
+    polish: 'ಪಾಲಿಶ್ ತುಣುಕುಗಳು',
     unused: 'ಬಳಸದ ಮಿತಿ',
     policy: 'ಪೂರ್ವನಿಯೋಜಿತ: ಕಾರಿಗರರ ಬಳಿ (UNCONFIRMED)',
     waterfall: 'ಶುದ್ಧ ಚಿನ್ನದ ಹಂತಗಳು',
@@ -132,12 +187,19 @@ const text = {
 };
 
 function blankFinishedLot(purityPerMille = '916'): ReturnLotForm {
-  return { weightGrams: '', purityPerMille, method: 'touch' };
+  return { weightGrams: '', stoneWeightGrams: '0', otherNonGoldWeightGrams: '0', purityPerMille, method: 'touch' };
 }
 
 function blankScrapLot(purityPerMille = '916'): ScrapLotForm {
-  return { weightGrams: '', purityPerMille };
+  return { weightGrams: '', stoneWeightGrams: '0', otherNonGoldWeightGrams: '0', purityPerMille };
 }
+
+const money = (paise: number) => new Intl.NumberFormat('en-IN', {
+  style: 'currency',
+  currency: 'INR',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+}).format(paise / 100);
 
 export default function ReturnReconciliationPanel({ orderId, userId, language, onSubmitted }: Props) {
   const labels = text[language];
@@ -148,6 +210,7 @@ export default function ReturnReconciliationPanel({ orderId, userId, language, o
   const [error, setError] = useState('');
   const [loadedOrderId, setLoadedOrderId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [pieceCounts, setPieceCounts] = useState({ buffing: 0, cutting: 0, polish: 0 });
 
   useEffect(() => {
     let cancelled = false;
@@ -163,11 +226,14 @@ export default function ReturnReconciliationPanel({ orderId, userId, language, o
         setLoadedOrderId(orderId);
         setError('');
         setResult(null);
+        setPieceCounts({ buffing: 0, cutting: 0, polish: 0 });
         const sampleFinished = data.scenario?.finishedLots;
         const sampleScrap = data.scenario?.scrapLots;
         setFinishedLots(sampleFinished?.length
           ? sampleFinished.map((lot) => ({
             weightGrams: lot.weightGrams,
+            stoneWeightGrams: lot.stoneWeightGrams ?? '0',
+            otherNonGoldWeightGrams: lot.otherNonGoldWeightGrams ?? '0',
             purityPerMille: String(lot.purityPerMille),
             method: lot.method,
           }))
@@ -175,6 +241,8 @@ export default function ReturnReconciliationPanel({ orderId, userId, language, o
         setScrapLots(sampleScrap?.length
           ? sampleScrap.map((lot) => ({
             weightGrams: lot.weightGrams,
+            stoneWeightGrams: lot.stoneWeightGrams ?? '0',
+            otherNonGoldWeightGrams: lot.otherNonGoldWeightGrams ?? '0',
             purityPerMille: String(lot.purityPerMille),
           }))
           : [blankScrapLot(String(data.issuedLots[0]?.purityPerMille ?? 916))]);
@@ -201,6 +269,11 @@ export default function ReturnReconciliationPanel({ orderId, userId, language, o
     )));
   };
 
+  const updatePieceCount = (kind: keyof typeof pieceCounts, value: string) => {
+    const count = Number(value);
+    setPieceCounts((current) => ({ ...current, [kind]: Number.isInteger(count) && count >= 0 ? count : 0 }));
+  };
+
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setSaving(true);
@@ -213,6 +286,8 @@ export default function ReturnReconciliationPanel({ orderId, userId, language, o
           idempotencyKey: crypto.randomUUID(),
           finishedLots: finishedLots.map((lot) => ({
             weightGrams: lot.weightGrams,
+            stoneWeightGrams: lot.stoneWeightGrams,
+            otherNonGoldWeightGrams: lot.otherNonGoldWeightGrams,
             purityPerMille: Number(lot.purityPerMille),
             method: lot.method,
           })),
@@ -220,8 +295,11 @@ export default function ReturnReconciliationPanel({ orderId, userId, language, o
             .filter((lot) => lot.weightGrams.trim() !== '')
             .map((lot) => ({
               weightGrams: lot.weightGrams,
+              stoneWeightGrams: lot.stoneWeightGrams,
+              otherNonGoldWeightGrams: lot.otherNonGoldWeightGrams,
               purityPerMille: Number(lot.purityPerMille),
             })),
+          pieceCounts,
         }),
       });
       const data = await response.json();
@@ -253,6 +331,13 @@ export default function ReturnReconciliationPanel({ orderId, userId, language, o
     : result?.result.status === 'EXCESS_REVIEW'
       ? 'border-amber-300 bg-amber-50 text-amber-900'
       : 'border-green-300 bg-green-50 text-green-900';
+  const idealStatusLabel = result?.result.idealReturnStatus === 'SHORT'
+    ? 'SHORT'
+    : result?.result.idealReturnStatus === 'WITHIN_BUFFER'
+      ? 'WITHIN_BUFFER'
+      : result?.result.idealReturnStatus === 'AT_OR_ABOVE_IDEAL'
+        ? 'AT_OR_ABOVE_IDEAL'
+        : null;
 
   return (
     <section className="min-w-0 space-y-4 rounded-3xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5">
@@ -260,7 +345,9 @@ export default function ReturnReconciliationPanel({ orderId, userId, language, o
         <h2 className="break-words text-xl font-black text-gray-900">{labels.title}</h2>
         <p className="mt-1 break-words text-sm text-gray-600">{labels.intro}</p>
         <p className="mt-2 break-words rounded-lg bg-blue-50 p-3 text-sm text-blue-900">
-          {labels.agreement} v{configuration.agreement.version}: {configuration.agreement.percentLabel} {configuration.agreement.basis.replaceAll('_', ' ')} · {labels.tolerance}: {configuration.configuration.grossWeightToleranceMg.toLocaleString()} mg
+          {labels.agreement} v{configuration.agreement.version}: {configuration.agreement.basis === 'ideal_return_buffer'
+            ? `${configuration.configuration.idealReturnFactorBp} bp ideal · ${configuration.configuration.bufferBp} bp buffer`
+            : `${configuration.agreement.percentLabel} ${configuration.agreement.basis.replaceAll('_', ' ')}`} · {labels.tolerance}: {configuration.configuration.grossWeightToleranceMg.toLocaleString()} mg · Target {configuration.configuration.targetWeightMg.toLocaleString()} ± {configuration.configuration.targetToleranceMg.toLocaleString()} mg
         </p>
         <p className="mt-1 break-words text-xs font-semibold text-amber-800">{labels.unused}: {labels.policy}</p>
       </div>
@@ -276,9 +363,15 @@ export default function ReturnReconciliationPanel({ orderId, userId, language, o
             </button>
           </div>
           {finishedLots.map((lot, index) => (
-            <div key={`finished-${index}`} className="grid min-w-0 grid-cols-2 gap-2 rounded-xl border bg-gray-50 p-3 sm:grid-cols-4">
+            <div key={`finished-${index}`} className="grid min-w-0 grid-cols-2 gap-2 rounded-xl border bg-gray-50 p-3 sm:grid-cols-6">
               <label className="min-w-0 text-xs font-semibold">{labels.weight}
                 <input required min="0" step="0.001" inputMode="decimal" value={lot.weightGrams} onChange={(event) => updateFinishedLot(index, { weightGrams: event.target.value })} className="mt-1 w-full min-w-0 rounded-lg border p-2 text-sm" />
+              </label>
+              <label className="min-w-0 text-xs font-semibold">{labels.stone}
+                <input required min="0" step="0.001" inputMode="decimal" value={lot.stoneWeightGrams} onChange={(event) => updateFinishedLot(index, { stoneWeightGrams: event.target.value })} className="mt-1 w-full min-w-0 rounded-lg border p-2 text-sm" />
+              </label>
+              <label className="min-w-0 text-xs font-semibold">{labels.otherNonGold}
+                <input required min="0" step="0.001" inputMode="decimal" value={lot.otherNonGoldWeightGrams} onChange={(event) => updateFinishedLot(index, { otherNonGoldWeightGrams: event.target.value })} className="mt-1 w-full min-w-0 rounded-lg border p-2 text-sm" />
               </label>
               <label className="min-w-0 text-xs font-semibold">{labels.purity}
                 <select required value={lot.purityPerMille} onChange={(event) => updateFinishedLot(index, { purityPerMille: event.target.value })} className="mt-1 w-full min-w-0 rounded-lg border p-2 text-sm">
@@ -307,9 +400,15 @@ export default function ReturnReconciliationPanel({ orderId, userId, language, o
             </button>
           </div>
           {scrapLots.map((lot, index) => (
-            <div key={`scrap-${index}`} className="grid min-w-0 grid-cols-2 gap-2 rounded-xl border bg-gray-50 p-3">
+            <div key={`scrap-${index}`} className="grid min-w-0 grid-cols-2 gap-2 rounded-xl border bg-gray-50 p-3 sm:grid-cols-4">
               <label className="min-w-0 text-xs font-semibold">{labels.weight}
                 <input min="0" step="0.001" inputMode="decimal" value={lot.weightGrams} onChange={(event) => updateScrapLot(index, { weightGrams: event.target.value })} className="mt-1 w-full min-w-0 rounded-lg border p-2 text-sm" />
+              </label>
+              <label className="min-w-0 text-xs font-semibold">{labels.stone}
+                <input required min="0" step="0.001" inputMode="decimal" value={lot.stoneWeightGrams} onChange={(event) => updateScrapLot(index, { stoneWeightGrams: event.target.value })} className="mt-1 w-full min-w-0 rounded-lg border p-2 text-sm" />
+              </label>
+              <label className="min-w-0 text-xs font-semibold">{labels.otherNonGold}
+                <input required min="0" step="0.001" inputMode="decimal" value={lot.otherNonGoldWeightGrams} onChange={(event) => updateScrapLot(index, { otherNonGoldWeightGrams: event.target.value })} className="mt-1 w-full min-w-0 rounded-lg border p-2 text-sm" />
               </label>
               <label className="min-w-0 text-xs font-semibold">{labels.purity}
                 <select value={lot.purityPerMille} onChange={(event) => updateScrapLot(index, { purityPerMille: event.target.value })} className="mt-1 w-full min-w-0 rounded-lg border p-2 text-sm">
@@ -323,6 +422,18 @@ export default function ReturnReconciliationPanel({ orderId, userId, language, o
           ))}
         </div>
 
+        <div className="grid grid-cols-3 gap-2 rounded-xl bg-gray-50 p-3">
+          {([
+            ['buffing', labels.buffing],
+            ['cutting', labels.cutting],
+            ['polish', labels.polish],
+          ] as const).map(([kind, label]) => (
+            <label key={kind} className="min-w-0 text-xs font-semibold">{label}
+              <input type="number" min="0" step="1" value={pieceCounts[kind]} onChange={(event) => updatePieceCount(kind, event.target.value)} className="mt-1 w-full min-w-0 rounded-lg border p-2 text-sm" />
+            </label>
+          ))}
+        </div>
+
         <button type="submit" disabled={saving} className="w-full rounded-xl bg-indigo-700 px-4 py-3 font-bold text-white disabled:opacity-60">
           {saving ? '…' : labels.reconcile}
         </button>
@@ -332,7 +443,25 @@ export default function ReturnReconciliationPanel({ orderId, userId, language, o
         <div aria-live="polite" className="min-w-0 space-y-3">
           <div className={`min-w-0 rounded-2xl border p-4 ${statusStyle}`}>
             <h3 className="break-words font-black">{statusLabels[result.result.status]}</h3>
+            {idealStatusLabel && <p className="mt-1 font-black">{labels.idealStatus}: {idealStatusLabel}</p>}
             <p className="mt-2 break-words font-semibold">{result.result.explanation[language]}</p>
+          </div>
+
+          {result.result.targetWeightFlagged && (
+            <div className="rounded-2xl border border-red-300 bg-red-50 p-4 text-red-950">
+              <h3 className="font-black">{labels.targetFlag}</h3>
+              <p>{result.result.targetWeightDeviationMg! < 0 ? 'Under' : 'Over'} target by {Math.abs(result.result.targetWeightDeviationMg!).toLocaleString()} mg · {labels.targetImpact}: {money(Math.abs(result.result.targetWeightPriceImpactPaise!))} {result.result.targetWeightPriceImpactPaise! < 0 ? 'below' : 'above'} target · SIMULATED</p>
+            </div>
+          )}
+
+          {result.result.idealReturnStatus === 'WITHIN_BUFFER' && (
+            <div className="rounded-2xl border border-green-300 bg-green-50 p-4 text-green-950">
+              <p className="font-semibold">{labels.retained}: {result.result.retainedGoldMg.toLocaleString()} mg · SIMULATED value {money(result.result.retainedGoldValuePaise)}</p>
+            </div>
+          )}
+          <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-4 text-indigo-950">
+            <p className="font-black">{labels.fairPay}: {money(result.result.fairPayPaise)}</p>
+            <p className="text-sm">Per-piece pay: {money(result.result.perPiecePayPaise)} · SIMULATED gold rate: {money(configuration.configuration.simulatedRatePaisePerGram)}/g</p>
           </div>
 
           <div className="min-w-0 rounded-2xl border p-4">
