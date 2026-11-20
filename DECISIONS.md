@@ -100,3 +100,24 @@
 - Pending owner-approved float credits and draw-downs, and pending-karigar-ack float credits, reserve their requested milligrams against later requests, but do not alter replayed balances until approval posts the issue. Risk warnings do not add reservations.
 - The replay slider is a deterministic 90-day synthetic timeline of increasing float, slowing returns, and then silence. The first warning day and both historical value estimates are computed from the configured synthetic balances and SIMULATED dated rates. It is labelled `SYNTHETIC`; it cites no real incident.
 - Trust tier limits, signal weights/thresholds, staff approval size, purity baseline, loss caps, recommendation wording, replay values, and rates are demo configuration requiring field validation. The loss-age allocation uses the earliest acknowledged issue date as an estimate, consistent with the existing Gold-at-Large ageing convention.
+
+## Workshop demo low-float alerts and speech entry
+
+- The workshop demo shows a dashboard alert and notification count when untouched float falls below its existing configurable threshold (20 g by default). Selecting the alert opens that karigar's detail, where a clearly labelled top-up form adds the reviewed amount to their float; top-ups remain SIMULATED demo-ledger activity.
+- Hindi speech input uses `hi-IN` and normalizes common Hindi number words and Devanagari digits to milligram-safe gram values before preview. Speech recognition availability remains browser-dependent; no audio is sent to an external application by this UI.
+
+## Customer orders, activity ledger, and command entry
+
+- Customer orders are recorded in the shared browser demo ledger; assignment creates a linked karigar order and reserves the requested milligrams from untouched float. Customer status progresses from received to with-karigar, then ready only after linked work is acknowledged, and delivered only by a manual jeweller action.
+- The customer balance in the ready WhatsApp deep link is an estimate: expected grams multiplied by the editable 22K demo rate, plus making charges, less advance. The link opens WhatsApp for human review; the app does not send a message automatically.
+- Customer notifications, issue/assignment, wastage report, acknowledgement, and delivery steps are appended to Activity. Weight statements aggregate the demo ledger's gross issue, reported wastage, below-threshold bonus, and current in-order balance.
+- Default wastage, low-float threshold, and demo rates persist in the shared local demo store. Command amounts must be adjacent to a gram unit or “point”; the user reviews and edits karigar, item, and grams before confirming. Speech recognition is attempted in Hindi; keyboard voice typing remains the fallback.
+- These customer values, wa.me links, weights, and activity are demo workflow data and do not replace the backend's audited ledger or external message delivery.
+
+## Step five navigation and simplification
+
+- Jewellers enter the existing ledger-backed workspace with exactly four bottom tabs: Home, Karigars, Orders, and Records. Advanced rate, risk replay, inbox, action-log, and flagged demo-control panels are under More; the route manifest maps prior feature areas to these screens.
+- Karigars enter only their own slip dashboard. Assisted slip access stays in jeweller karigar details; staff keeps the separate handoff view.
+- Secondary panels use native disclosure sections so less-used controls remain available without crowding the default view. Orders keeps rescue planning and approvals within the three-card visible limit.
+- Daily-brief links open the corresponding order detail. Agreement and return panels load only when expanded, avoiding requests for detail data the user has not opened.
+- Step five changes presentation and navigation only; ledger APIs and their approval behavior remain unchanged. All example balances, rates, inbox entries, and scenario replays retain SIMULATED or SYNTHETIC labels.

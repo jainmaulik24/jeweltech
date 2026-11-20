@@ -114,9 +114,16 @@ function parseRescueOptions(action: DeadlineAction | undefined): RescueOption[] 
 interface Props {
   userId: string;
   role: Role;
+  view?: 'all' | 'rescue' | 'more' | 'controls';
+  showDemoControls?: boolean;
 }
 
-export default function DeadlinePanel({ userId, role }: Props) {
+export default function DeadlinePanel({
+  userId,
+  role,
+  view = 'all',
+  showDemoControls = false,
+}: Props) {
   const [board, setBoard] = useState<DeadlineBoard | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -179,16 +186,19 @@ export default function DeadlinePanel({ userId, role }: Props) {
     if (level === 'watch') return 'bg-amber-100 text-amber-900';
     return 'bg-emerald-100 text-emerald-900';
   };
+  const showRescue = view === 'all' || view === 'rescue';
+  const showActivity = view === 'all' || view === 'more';
+  const showControls = showDemoControls && (view === 'all' || view === 'controls');
 
   return (
     <section className="min-w-0 space-y-4" aria-label="Deadline and dues">
       {error && <p role="alert" className="break-words rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-800">{error}</p>}
 
-      <section className="min-w-0 space-y-4 rounded-3xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5">
+      {showControls && (
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-lg font-black text-gray-900">Wedding countdown & rescue</h2>
-            <p className="text-sm text-gray-600">SIMULATED inbox · drafts and proposals only · no messages are sent</p>
+            <h2 className="font-black text-gray-900">Deadline demo controls · SIMULATED</h2>
+            <p className="text-sm text-gray-600">Fast-forward changes evaluation time only; no messages are sent.</p>
           </div>
           {role === 'jeweller' && (
             <div className="flex flex-wrap gap-2">
@@ -211,6 +221,37 @@ export default function DeadlinePanel({ userId, role }: Props) {
             </div>
           )}
         </div>
+      )}
+
+      {showRescue && (
+        <>
+        <section className="min-w-0 space-y-4 rounded-3xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-lg font-black text-gray-900">Wedding countdown & rescue</h2>
+              <p className="text-sm text-gray-600">SIMULATED inbox · drafts and proposals only · no messages are sent</p>
+            </div>
+            {showControls && role === 'jeweller' && (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  disabled={busy}
+                  onClick={() => void post('/api/deadline/tick', { fastForwardHours: 0 })}
+                  className="rounded-lg bg-gray-900 px-3 py-2 text-sm font-bold text-white disabled:opacity-50"
+                >
+                  Run agent tick
+                </button>
+                <button
+                  disabled={busy}
+                  onClick={() => void post('/api/deadline/tick', {
+                    fastForwardHours: Math.min(board.fastForward.stepHours, board.fastForward.maxHours),
+                  })}
+                  className="rounded-lg bg-amber-600 px-3 py-2 text-sm font-bold text-white disabled:opacity-50"
+                >
+                  Fast-forward {Math.min(board.fastForward.stepHours, board.fastForward.maxHours)}h
+                </button>
+              </div>
+            )}
+          </div>
 
         {board.orders.length === 0 ? (
           <p className="text-sm text-gray-600">No customer-occasion jobs need deadline tracking.</p>
@@ -293,7 +334,7 @@ export default function DeadlinePanel({ userId, role }: Props) {
             </article>
           );
         })}
-      </section>
+        </section>
 
       <section className="min-w-0 space-y-3 rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
         <h2 className="font-black text-gray-900">Dues chase · SIMULATED</h2>
@@ -334,8 +375,10 @@ export default function DeadlinePanel({ userId, role }: Props) {
           </section>
         );
       })}
+        </>
+      )}
 
-      <section className="min-w-0 space-y-3 rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
+      {showActivity && <section className="min-w-0 space-y-3 rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
         <h2 className="font-black text-gray-900">Simulated inbox & action log</h2>
         {board.inbox.length === 0 && <p className="text-sm text-gray-600">Inbox is clear.</p>}
         {board.inbox.map((action) => (
@@ -371,7 +414,7 @@ export default function DeadlinePanel({ userId, role }: Props) {
             ))}
           </div>
         </details>
-      </section>
+      </section>}
     </section>
   );
 }

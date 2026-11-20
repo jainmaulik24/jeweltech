@@ -155,6 +155,20 @@ export default function KarigarSlipDashboard({
     };
   }, [load, refreshKey, text.error]);
 
+  const exposureSentence = useCallback(() => {
+    if (!home?.exposureSignal) return text.exposureSteady;
+    const messages = {
+      draw_rate: text.exposureDrawRate,
+      gold_age: text.exposureGoldAge,
+      missed_promises: text.exposureMissedPromises,
+      concentration: text.exposureConcentration,
+      purity_shortfall: text.exposurePurity,
+      loss_history: text.exposureLoss,
+      peer_comparison: text.exposurePeer,
+    };
+    return messages[home.exposureSignal];
+  }, [home, text]);
+
   const spokenScreen = useMemo(() => {
     if (!home) return '';
     const slipLines = home.slips.map((slip) => [
@@ -186,7 +200,7 @@ export default function KarigarSlipDashboard({
       ...pending,
       exposureSentence(),
     ].join('. ');
-  }, [home, text]);
+  }, [home, text, exposureSentence]);
 
   const speak = (value: string) => {
     if (!('speechSynthesis' in window)) {
@@ -234,19 +248,6 @@ export default function KarigarSlipDashboard({
     if (type === 'payment') return text.cashEntry;
     if (type === 'settlement') return text.goldAccount;
     return text.pendingEntry;
-  };
-  const exposureSentence = () => {
-    if (!home?.exposureSignal) return text.exposureSteady;
-    const messages = {
-      draw_rate: text.exposureDrawRate,
-      gold_age: text.exposureGoldAge,
-      missed_promises: text.exposureMissedPromises,
-      concentration: text.exposureConcentration,
-      purity_shortfall: text.exposurePurity,
-      loss_history: text.exposureLoss,
-      peer_comparison: text.exposurePeer,
-    };
-    return messages[home.exposureSignal];
   };
   const standalonePending = home
     ? home.pendingAcknowledgements.filter((event) =>

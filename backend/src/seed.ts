@@ -42,6 +42,14 @@ const insertOccasionOrder = db.prepare(`
     INSERT INTO orders (id, jeweller_id, karigar_id, description, due_date, occasion_date, job_type)
     VALUES (?, ?, ?, ?, ?, ?, ?)
 `);
+const insertScenarioAgreement = db.prepare(`
+    INSERT INTO wastage_agreements
+    (id, order_id, jeweller_id, karigar_id, job_type, basis, percent_bps,
+     labour_rate_paise_per_gram, sweep_owner, karigar_sweep_share_bps,
+     cash_rate_policy, version, effective_at, status, accepted_at, created_at)
+    VALUES (?, ?, 'j1', 'k1', 'plain', 'fine_issued', ?, 4000, 'karigar',
+     10000, 'settlement', 1, ?, 'accepted', ?, ?)
+`);
 
 const appendAt = (date: Date, event: Parameters<typeof appendLedgerEvent>[0]) => {
     setClock({ now: () => date });
@@ -340,6 +348,59 @@ const seed = db.transaction(() => {
         weddingOccasion.toISOString(),
         DEADLINE_DEMO_CONFIG.wedding.jobType,
     );
+    const weddingAgreementId = `agr-${DEADLINE_DEMO_CONFIG.wedding.orderId}-v1`;
+    const weddingAgreementTime = seedTime.toISOString();
+    const weddingAgreementPercentBps = DISPUTE_CONFIG.demo.agreementPercentBps;
+    insertScenarioAgreement.run(
+        weddingAgreementId,
+        DEADLINE_DEMO_CONFIG.wedding.orderId,
+        weddingAgreementPercentBps,
+        weddingAgreementTime,
+        weddingAgreementTime,
+        weddingAgreementTime,
+    );
+    const weddingAgreement = {
+        id: weddingAgreementId,
+        orderId: DEADLINE_DEMO_CONFIG.wedding.orderId,
+        jobType: DEADLINE_DEMO_CONFIG.wedding.jobType,
+        basis: 'fine_issued' as const,
+        percentBps: weddingAgreementPercentBps,
+        labourRatePaisePerGram: 4000,
+        sweepOwner: 'karigar' as const,
+        karigarSweepShareBps: 10000,
+        version: 1,
+    };
+    appendLedgerEvent({
+        id: `evt-${DEADLINE_DEMO_CONFIG.wedding.orderId}-agreement`,
+        orderId: DEADLINE_DEMO_CONFIG.wedding.orderId,
+        type: 'agreement_version',
+        weightMg: 0,
+        status: 'acknowledged',
+        createdBy: 'j1',
+        notes: JSON.stringify({
+            agreement: weddingAgreement,
+            summary: formatAgreementSummary(weddingAgreement, 'Ramesh'),
+        }),
+        idempotencyKey: `${DEADLINE_DEMO_CONFIG.wedding.orderId}-agreement-v1`,
+        agreementId: weddingAgreementId,
+        agreementVersion: 1,
+    });
+    appendLedgerEvent({
+        id: `evt-${DEADLINE_DEMO_CONFIG.wedding.orderId}-agreement-ack`,
+        orderId: DEADLINE_DEMO_CONFIG.wedding.orderId,
+        type: 'agreement_acknowledgement',
+        weightMg: 0,
+        status: 'acknowledged',
+        createdBy: 'k1',
+        notes: JSON.stringify({
+            agreementId: weddingAgreementId,
+            version: 1,
+            acceptedAt: weddingAgreementTime,
+        }),
+        idempotencyKey: `${DEADLINE_DEMO_CONFIG.wedding.orderId}-agreement-ack-v1`,
+        agreementId: weddingAgreementId,
+        agreementVersion: 1,
+    });
 
     const versions = [
         { basis: 'fine_issued', percentBps: 300, sweepOwner: 'karigar', karigarSweepShareBps: 10000, cashRatePolicy: 'issue', status: 'accepted' },
@@ -430,6 +491,8 @@ const seed = db.transaction(() => {
         createdBy: 'j1',
         notes: 'SIMULATED wedding job issue; seeded for deadline rescue.',
         idempotencyKey: 'wedding-deadline-issue',
+        agreementId: weddingAgreementId,
+        agreementVersion: 1,
     });
 
     const journeyDemo = GOLD_JOURNEY_CONFIG.demo;
@@ -476,15 +539,6 @@ const seed = db.transaction(() => {
         idempotencyKey: `${journeyDemo.orderId}-pending-reassignment`,
     });
     acknowledgeCustodyTransfer(pendingJourneyTransfer.id, 'j1', seedTime);
-
-    const insertScenarioAgreement = db.prepare(`
-        INSERT INTO wastage_agreements
-        (id, order_id, jeweller_id, karigar_id, job_type, basis, percent_bps,
-         labour_rate_paise_per_gram, sweep_owner, karigar_sweep_share_bps,
-         cash_rate_policy, version, effective_at, status, accepted_at, created_at)
-        VALUES (?, ?, 'j1', 'k1', 'plain', 'fine_issued', ?, 4000, 'karigar',
-         10000, 'settlement', 1, ?, 'accepted', ?, ?)
-    `);
 
     const disputeDemo = DISPUTE_CONFIG.demo;
     const defaultScenarioAgreementPercentBps = disputeDemo.agreementPercentBps;

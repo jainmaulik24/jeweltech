@@ -40,6 +40,8 @@ interface Props {
   role: Role;
   language: Language;
   onOpenAction: (item: DailyBriefItem) => void;
+  showActions?: boolean;
+  showFastForward?: boolean;
 }
 
 interface FastForwardResult {
@@ -50,7 +52,7 @@ interface FastForwardResult {
 
 const labels = {
   en: {
-    title: 'Daily brief',
+    title: 'Today',
     scheduled: 'Scheduled',
     preview: 'Live preview',
     generated: 'Generated',
@@ -62,7 +64,7 @@ const labels = {
     retry: 'Retry',
   },
   kn: {
-    title: 'ದೈನಂದಿನ ಮಾಹಿತಿ',
+    title: 'ಇಂದು',
     scheduled: 'ನಿಗದಿತ ಸಮಯ',
     preview: 'ಈಗಿನ ಪೂರ್ವವೀಕ್ಷಣೆ',
     generated: 'ರಚಿಸಿದ ಸಮಯ',
@@ -75,7 +77,14 @@ const labels = {
   },
 };
 
-export default function DailyBriefPanel({ userId, role, language, onOpenAction }: Props) {
+export default function DailyBriefPanel({
+  userId,
+  role,
+  language,
+  onOpenAction,
+  showActions = true,
+  showFastForward = true,
+}: Props) {
   const [brief, setBrief] = useState<BriefData | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -168,7 +177,7 @@ export default function DailyBriefPanel({ userId, role, language, onOpenAction }
           >
             <Volume2 size={18} /> {text.play}
           </button>
-          {role === 'jeweller' && brief && (
+          {showFastForward && role === 'jeweller' && brief && (
             <button
               disabled={busy}
               onClick={() => void fastForward()}
@@ -186,7 +195,7 @@ export default function DailyBriefPanel({ userId, role, language, onOpenAction }
           <button onClick={() => void loadBrief()} className="rounded-lg bg-white px-3 py-2 text-red-900">{text.retry}</button>
         </div>
       )}
-      {!brief ? <p className="text-sm text-gray-600">{text.loading}</p> : brief.items.length === 0 ? (
+      {!brief ? <p className="text-sm text-gray-600">{text.loading}</p> : !showActions ? null : brief.items.length === 0 ? (
         <p className="text-sm text-gray-600">{text.empty}</p>
       ) : (
         <ol className="space-y-2">

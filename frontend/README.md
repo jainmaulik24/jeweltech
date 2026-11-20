@@ -1,75 +1,49 @@
-# React + TypeScript + Vite
+# Jeweltech demo
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+## Run locally
 
-Currently, two official plugins are available:
+Start the backend in one terminal:
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+```powershell
+cd backend
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://npmx.dev/package/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://npmx.dev/package/eslint-plugin-react-dom) for React-specific lint rules:
+Start the frontend in a second terminal:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+```powershell
+cd frontend
+npm install
+npm run dev
+```
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+Open the Vite URL shown in the frontend terminal. Choose **Demo jeweller** or
+**Demo karigar** and select **Continue**. The sign-in screen fills the seeded
+demo phone and PIN (`1234`); demo phones are `111` for a jeweller and `333` for
+a karigar. Sign-in requires the backend to be running.
 
+The jeweller portal includes **Dashboard**, **Karigars**, **Orders**,
+**Customers**, **Ledger**, and **Settings**. The customer workflow runs from
+recording a customer order, assigning it to a karigar, and completing the
+karigar work slip through acknowledgement. Once work is acknowledged, the
+jeweller can record a demo customer update with the reported wastage compared
+with its allowance. This is a local demo action and does not send a message or
+open an external link. The karigar signs in to his own paper-slip view.
+
+The customer and karigar demo ledger is stored in this browser's local storage;
+it is separate from the backend SQLite ledger. Existing local demo data is
+preserved when you sign out or restart the app. Do not use **Reset demo** or
+`npm run seed` if you need to preserve local demo data. Demo rates and example
+transactions are labelled SIMULATED or SYNTHETIC.
+
+`npm run seed` resets the local synthetic database. Do not run it if you need to
+preserve local demo data.
+
+## Frontend checks
+
+```powershell
+npm run test:routes
+npm run lint
+npm run build
 ```

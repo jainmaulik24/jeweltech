@@ -1,5 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
-import { CheckCircle, PlusCircle, LogOut, Globe, FileText, Banknote, Mic } from 'lucide-react';
+import {
+  Banknote,
+  BookOpen,
+  CheckCircle,
+  ClipboardList,
+  FileText,
+  Globe,
+  Home,
+  LogOut,
+  Mic,
+  MoreHorizontal,
+  PlusCircle,
+  Users,
+} from 'lucide-react';
 import { useSpeech } from './hooks/useSpeech';
 import AgreementPanel from './AgreementPanel';
 import ReturnReconciliationPanel from './ReturnReconciliationPanel';
@@ -10,9 +23,20 @@ import type { DailyBriefItem } from './DailyBriefPanel';
 import DisputePanel from './DisputePanel';
 import GoldJourneyPanel from './GoldJourneyPanel';
 import KarigarFloatPanel from './KarigarFloatPanel';
+import KarigarWorkspace from './KarigarWorkspace';
 import PinLogin, { type LoginUser } from './PinLogin';
-import KarigarSlipDashboard from './KarigarSlipDashboard';
+import GoldOrderDemo from './GoldOrderDemo';
 import { localeText, type LocaleCode } from './locales';
+import routeManifest from './routeManifest.json';
+
+type AppScreen =
+  | 'home'
+  | 'karigars'
+  | 'karigar-detail'
+  | 'orders'
+  | 'order-detail'
+  | 'records'
+  | 'more';
 
 const formatPaise = (paise: number) => new Intl.NumberFormat('en-IN', {
   style: 'currency',
@@ -43,8 +67,16 @@ interface InboxEvent extends PendingEvent {
   description: string;
 }
 
+interface DraftEvent {
+  type: 'issue' | 'return' | 'scrap_entry' | 'payment' | 'unknown';
+  weightMg: number;
+  amount: number;
+  confidence: 'high' | 'low';
+  readBackText: string;
+}
+
 // Local deterministic parser fallback so voice entry never fails if backend isn't restarted
-function localParseUtterance(text: string) {
+function localParseUtterance(text: string): DraftEvent {
   const raw = text.trim();
   const lower = raw.toLowerCase();
 
@@ -138,6 +170,12 @@ export default function App() {
   const [lang, setLang] = useState<LocaleCode>('en');
   const [user, setUser] = useState<LoginUser | null>(null);
 
+  const [activeScreen, setActiveScreen] = useState<AppScreen>('home');
+  const [selectedKarigarId, setSelectedKarigarId] = useState('');
+  const [selectedRecordOrderId, setSelectedRecordOrderId] = useState('');
+  const [agreementPanelOpen, setAgreementPanelOpen] = useState(false);
+  const [returnCheckOpen, setReturnCheckOpen] = useState(false);
+  const [ownerApprovalCount, setOwnerApprovalCount] = useState(0);
   const [activeOrderId, setActiveOrderId] = useState<string | null>(null);
   const [demoOrderState, setDemoOrderState] = useState<{ userId: string; orders: DemoOrder[] } | null>(null);
   const [demoError, setDemoError] = useState('');
@@ -154,6 +192,8 @@ export default function App() {
 
   const t = localeText[lang].app;
   const panelLanguage = lang === 'hi' ? 'en' : lang;
+  const showDemoControls = import.meta.env.VITE_SHOW_DEMO_CONTROLS === 'true';
+  const activeTab = routeManifest.screens.find((screen) => screen.id === activeScreen)?.tab ?? null;
   const demoOrders = demoOrderState && user && demoOrderState.userId === user.id ? demoOrderState.orders : [];
   const activeDemoOrder = demoOrders.find((order) => order.id === activeOrderId);
   const canUseOrderPanels = user?.role === 'jeweller'
@@ -167,17 +207,17 @@ export default function App() {
   const { isListening, transcript, listen, error: speechError } = useSpeech(
     lang === 'hi' ? 'hi-IN' : lang === 'kn' ? 'kn-IN' : 'en-IN',
   );
-  const [draftEvent, setDraftEvent] = useState<any>(null);
+  const [draftEvent, setDraftEvent] = useState<DraftEvent | null>(null);
   const [postingVoiceEvent, setPostingVoiceEvent] = useState(false);
 
-  const speak = (text: string) => {
+  const speak = useCallback((text: string) => {
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = lang === 'hi' ? 'hi-IN' : lang === 'kn' ? 'kn-IN' : 'en-IN';
       window.speechSynthesis.speak(utterance);
     }
-  };
+  }, [lang]);
 
   useEffect(() => {
     if (transcript && !isListening) {
@@ -200,7 +240,7 @@ export default function App() {
           speak(fallbackDraft.readBackText);
         });
     }
-  }, [transcript, isListening]);
+  }, [transcript, isListening, speak]);
   // ---------------------------------
 
   const fetchBalance = async (orderId: string) => {
@@ -239,20 +279,42 @@ export default function App() {
     setInboxState({ userId, events });
   };
 
+  const navigateTo = (screen: AppScreen) => {
+    setActiveScreen(screen);
+    setActiveOrderId(null);
+    setSelectedKarigarId('');
+    setSelectedRecordOrderId('');
+    setAgreementPanelOpen(false);
+    setReturnCheckOpen(false);
+    setProposal(null);
+    setBriefTarget(null);
+    setDemoError('');
+  };
+
+  const openOrder = (orderId: string, loadApprovals = true) => {
+    setActiveScreen('order-detail');
+    setActiveOrderId(orderId);
+    setSelectedRecordOrderId(orderId);
+    setAgreementPanelOpen(false);
+    setReturnCheckOpen(false);
+    setProposal(null);
+    setDemoError('');
+    window.history.pushState(null, '', `#order-${orderId}`);
+    void fetchBalance(orderId);
+    if (loadApprovals && user) {
+      void fetchPendingEvents(orderId, user.id)
+        .catch((loadError: Error) => setDemoError(loadError.message));
+    }
+  };
+
   const openBriefAction = (item: DailyBriefItem) => {
     if (!user) return;
-    setActiveOrderId(item.orderId);
     setBriefTarget({
       orderId: item.orderId,
       eventId: item.eventId,
       category: item.category,
     });
-    window.history.pushState(null, '', item.category === 'custody_approval' ? '#gold-journey' : item.href);
-    void fetchBalance(item.orderId);
-    if (item.category !== 'custody_approval') {
-      void fetchPendingEvents(item.orderId, user.id)
-        .catch((loadError: Error) => setDemoError(loadError.message));
-    }
+    openOrder(item.orderId, item.category !== 'custody_approval');
   };
 
   useEffect(() => {
@@ -310,6 +372,31 @@ export default function App() {
   }, [loadInboxEvents, user]);
 
   useEffect(() => {
+    if (!user || user.role !== 'jeweller') return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const response = await fetch('/api/owner-issue-approvals', {
+          headers: { 'x-user-id': user.id },
+        });
+        const result = await response.json() as { approvals?: unknown[]; error?: string };
+        if (!response.ok) throw new Error(result.error ?? 'Could not load owner approvals.');
+        if (!cancelled) setOwnerApprovalCount(result.approvals?.length ?? 0);
+      } catch (loadError) {
+        if (!cancelled) {
+          setDemoError(loadError instanceof Error ? loadError.message : 'Could not load owner approvals.');
+        }
+      }
+    };
+    void refresh();
+    const intervalId = window.setInterval(() => { void refresh(); }, 10_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [user]);
+
+  useEffect(() => {
     if (!user || !activeOrderId || user.role === 'staff'
       || (user.role === 'karigar' && activeDemoOrder && activeDemoOrder.karigarId !== user.id)) return;
     let cancelled = false;
@@ -332,6 +419,7 @@ export default function App() {
     if (res.ok) {
       const data = await res.json();
       setActiveOrderId(data.id);
+      setActiveScreen('order-detail');
       fetchBalance(data.id);
       return data.id;
     } else {
@@ -403,6 +491,10 @@ export default function App() {
 
   const selectUser = (nextUser: LoginUser | null) => {
     setUser(nextUser);
+    setActiveScreen('home');
+    setSelectedKarigarId('');
+    setSelectedRecordOrderId('');
+    setOwnerApprovalCount(0);
     setActiveOrderId(null);
     setDemoOrderState(null);
     setPendingEventState(null);
@@ -419,11 +511,10 @@ export default function App() {
     return <PinLogin language={lang} onLanguageChange={setLang} onLogin={selectUser} />;
   }
 
-  if (user.role === 'karigar') {
+  if (user.role !== 'staff') {
     return (
-      <KarigarSlipDashboard
-        userId={user.id}
-        userName={user.name}
+      <GoldOrderDemo
+        user={user}
         language={lang}
         onLanguageChange={setLang}
         onLogout={() => selectUser(null)}
@@ -431,285 +522,566 @@ export default function App() {
     );
   }
 
-  return (
-    <div className="mx-auto flex h-screen max-w-xl flex-col bg-gray-100 font-sans">
-      <header className="flex items-center justify-between gap-3 bg-gray-900 p-4 text-white shadow-lg sm:p-5">
-      <h2 className="min-w-0 break-words text-lg font-black tracking-wide sm:text-xl">{user.role === 'jeweller' ? t.jewellerView : user.role === 'staff' ? 'Helper View' : t.karigarView}</h2>
-        <div className="flex gap-4">
-          <button
-            aria-label="Change language"
-            onClick={() => setLang(lang === 'en' ? 'hi' : lang === 'hi' ? 'kn' : 'en')}
-            className="min-h-11 min-w-11 hover:text-amber-400"
-          >
-            <Globe size={24} />
+  if (user.role === 'staff') {
+    return (
+      <div className="min-h-dvh bg-stone-100">
+        <header className="flex items-center justify-between bg-gray-900 p-4 text-white">
+          <h1 className="font-black">Helper view</h1>
+          <button type="button" onClick={() => selectUser(null)} aria-label={t.logout}>
+            <LogOut aria-hidden="true" />
           </button>
-          <button onClick={() => selectUser(null)} className="hover:text-amber-400"><LogOut size={24} /></button>
-        </div>
-      </header>
-
-      <main className="flex min-w-0 flex-1 flex-col gap-5 overflow-y-auto p-4 sm:p-5">
-
-        {demoError && <p role="alert" className="break-words rounded-lg bg-red-50 p-3 text-sm font-semibold text-red-800">{demoError}</p>}
-
-        {!activeOrderId && (
-          <>
-            {user.role !== 'staff' && (
-              <DailyBriefPanel
-                userId={user.id}
-                role="jeweller"
-                language={panelLanguage}
-                onOpenAction={openBriefAction}
-              />
-            )}
-            {user.role !== 'staff' && (
-              <KarigarFloatPanel
-                userId={user.id}
-                role="jeweller"
-                language={panelLanguage}
-                onSelectOrder={(orderId) => {
-                  setActiveOrderId(orderId);
-                  fetchBalance(orderId);
-                  setDemoError('');
-                }}
-              />
-            )}
-            {user.role !== 'staff' && (
-              <DashboardPanel
-                userId={user.id}
-                role="jeweller"
-                language={panelLanguage}
-                onSelectOrder={(orderId) => {
-                  setActiveOrderId(orderId);
-                  fetchBalance(orderId);
-                  setDemoError('');
-                }}
-              />
-            )}
-            {user.role === 'jeweller' && (
-              <KarigarSlipDashboard
-                userId={user.id}
-                userName={user.name}
-                language={lang}
-                onLanguageChange={setLang}
-                mode="assisted"
-              />
-            )}
-            {user.role === 'staff' && (
-              <section className="space-y-3 rounded-3xl border border-indigo-200 bg-white p-4 shadow-sm">
-                <h2 className="font-black text-gray-900">Assigned gold journeys</h2>
-                {demoOrders.length === 0 && <p className="text-sm text-gray-600">No assigned handoffs are available.</p>}
-                {demoOrders.map((order) => (
-                  <button
-                    key={order.id}
-                    onClick={() => { setActiveOrderId(order.id); fetchBalance(order.id); }}
-                    className="w-full rounded-xl bg-indigo-50 p-3 text-left font-semibold text-indigo-950"
-                  >
-                    {order.description} · Open journey
-                  </button>
-                ))}
-              </section>
-            )}
-            <DeadlinePanel
-              userId={user.id}
-              role={user.role === 'staff' ? 'staff' : 'jeweller'}
-            />
-          </>
-        )}
-
-        {inboxEvents.length > 0 && (
-          <section aria-live="polite" className="space-y-2 rounded-2xl border-2 border-amber-400 bg-amber-50 p-4 text-amber-950">
-            <h2 className="font-black">Pending notifications · {inboxEvents.length}</h2>
-            <p className="text-sm font-semibold">These stay here until the event is acknowledged.</p>
-            {inboxEvents.map((event) => (
+        </header>
+        <main className="mx-auto max-w-2xl space-y-4 p-4 pb-8">
+          <section className="space-y-2 rounded-2xl bg-white p-4">
+            <h2 className="font-black">Assigned gold journeys</h2>
+            {demoOrders.length === 0 && <p className="text-sm text-gray-600">No assigned handoffs.</p>}
+            {demoOrders.map((order) => (
               <button
-                key={event.id}
-                onClick={() => {
-                  setActiveOrderId(event.orderId);
-                  void fetchBalance(event.orderId);
-                  void fetchPendingEvents(event.orderId, user.id)
-                    .catch((loadError: Error) => setDemoError(loadError.message));
-                }}
-                className="w-full rounded-xl border border-amber-200 bg-white p-3 text-left"
+                key={order.id}
+                type="button"
+                onClick={() => openOrder(order.id, false)}
+                className="min-h-12 w-full rounded-xl bg-indigo-50 p-3 text-left font-semibold text-indigo-950"
               >
-                <strong className="block">{event.description || 'Gold work'} · {event.type.replaceAll('_', ' ')}</strong>
-                <span className="text-sm">{event.type === 'payment' || event.type === 'settlement'
-                  ? formatPaise(event.amount)
-                  : `${event.weightMg.toLocaleString()} ${t.mg}`}</span>
-                {event.notes && <span className="mt-1 block whitespace-pre-wrap text-xs">{event.notes}</span>}
+                {order.description} · Open journey
               </button>
             ))}
           </section>
+          {activeOrderId && <GoldJourneyPanel orderId={activeOrderId} userId={user.id} />}
+          <DeadlinePanel userId={user.id} role="staff" view="rescue" />
+        </main>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-dvh bg-stone-100 font-sans text-gray-950">
+      <header className="sticky top-0 z-20 flex items-center justify-between gap-3 bg-gray-900 px-4 py-3 text-white shadow-sm">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-gray-300">{user.name}</p>
+          <h1 className="truncate font-black">{activeScreen === 'more' ? 'More' : t.jewellerView}</h1>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => navigateTo('more')}
+            aria-current={activeScreen === 'more' ? 'page' : undefined}
+            className="min-h-11 rounded-xl bg-white/10 px-3 font-bold"
+          >
+            <MoreHorizontal aria-hidden="true" className="mr-1 inline" size={18} />
+            More
+          </button>
+          <button
+            type="button"
+            aria-label="Change language"
+            onClick={() => setLang(lang === 'en' ? 'hi' : lang === 'hi' ? 'kn' : 'en')}
+            className="grid min-h-11 min-w-11 place-items-center rounded-xl hover:bg-white/10"
+          >
+            <Globe aria-hidden="true" size={21} />
+          </button>
+          <button
+            type="button"
+            onClick={() => selectUser(null)}
+            aria-label={t.logout}
+            className="grid min-h-11 min-w-11 place-items-center rounded-xl hover:bg-white/10"
+          >
+            <LogOut aria-hidden="true" size={21} />
+          </button>
+        </div>
+      </header>
+
+      <main className="mx-auto min-h-[calc(100dvh-9rem)] max-w-2xl space-y-4 p-4 pb-28">
+        {demoError && (
+          <p role="alert" className="break-words rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-800">
+            {demoError}
+          </p>
         )}
 
-        {activeOrderId && user && (
+        {activeScreen === 'home' && (
           <>
-            <div id={`order-${activeOrderId}`} className="rounded-3xl border border-gray-200 bg-white p-6 text-center shadow-sm sm:p-8">
-              <p className="text-gray-500 text-lg font-medium mb-2">{t.balance}</p>
-              <div className="flex flex-wrap items-baseline justify-center gap-x-2 break-words text-[clamp(2.5rem,10vw,3.75rem)] font-black tracking-tighter text-amber-600">
-                {balance.toLocaleString()} <span className="text-xl font-bold text-gray-400 sm:text-2xl">{t.mg}</span>
-              </div>
-            </div>
-            <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-xl bg-white px-4 py-3 shadow-sm">
-              <p className="min-w-0 break-words font-bold text-gray-800">
-                {demoOrders.find((order) => order.id === activeOrderId)?.description ?? t.currentOrder}
-              </p>
-              <button onClick={() => { setActiveOrderId(null); setProposal(null); setDemoError(''); }} className="shrink-0 rounded-lg bg-gray-100 px-3 py-2 text-sm font-bold text-gray-800">
-                {t.changeJob}
-              </button>
-            </div>
-            {canUseOrderPanels && <AgreementPanel
-              orderId={activeOrderId}
+            <DashboardPanel
               userId={user.id}
-              role={user.role === 'jeweller' ? 'jeweller' : 'karigar'}
+              role="jeweller"
               language={panelLanguage}
-            />}
-            {canUseOrderPanels && <ReturnReconciliationPanel
-              orderId={activeOrderId}
+              view="summary"
+              onSelectOrder={openOrder}
+            />
+            <DailyBriefPanel
               userId={user.id}
+              role="jeweller"
               language={panelLanguage}
-              onSubmitted={() => {
-                fetchBalance(activeOrderId);
-                fetchPendingEvents(activeOrderId, user.id).catch((loadError: Error) => setDemoError(loadError.message));
-              }}
-            />}
-            {canUseOrderPanels && <DisputePanel
-              orderId={activeOrderId}
-              userId={user.id}
-              role={user.role === 'jeweller' ? 'jeweller' : 'karigar'}
-              language={panelLanguage}
-              focusEventId={briefTarget?.category === 'escalated_dispute' ? briefTarget.eventId : null}
-            />}
-            <GoldJourneyPanel orderId={activeOrderId} userId={user.id} />
+              onOpenAction={openBriefAction}
+              showFastForward={false}
+            />
+            <button
+              type="button"
+              onClick={() => navigateTo('orders')}
+              className="flex min-h-16 w-full items-center justify-between rounded-2xl border border-amber-200 bg-white p-4 text-left shadow-sm"
+            >
+              <span>
+                <strong className="block">Pending approvals</strong>
+                <span className="text-sm text-gray-600">
+                  {inboxEvents.length + ownerApprovalCount === 0
+                    ? 'Nothing needs your approval.'
+                    : `${inboxEvents.length + ownerApprovalCount} waiting for review`}
+                </span>
+              </span>
+              <strong className="rounded-full bg-amber-100 px-3 py-1 text-amber-950">
+                {inboxEvents.length + ownerApprovalCount}
+              </strong>
+            </button>
           </>
         )}
 
-        {/* Jeweller Controls */}
-        {user.role === 'jeweller' && (
-          <div className="space-y-4 mt-2">
-
-            {/* 1. THE MICROPHONE BUTTON */}
-            <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-200 text-center my-6">
-              <button
-                onClick={listen}
-                className={`p-6 rounded-full text-white shadow-xl mb-4 transition-all ${isListening ? 'bg-red-500 animate-pulse' : 'bg-gray-900 hover:bg-gray-800'
-                  }`}
-              >
-                <Mic size={32} />
-              </button>
-              <p className="text-gray-500 font-medium">
-                {isListening ? 'Listening...' : (transcript ? `Heard: "${transcript}"` : 'Tap to speak ledger event')}
-              </p>
-              {speechError && <p role="alert" className="mt-2 text-sm font-bold text-red-700">{speechError}</p>}
-            </div>
-
-            {/* 2. THE DRAFT CONFIRMATION CARD */}
-            {draftEvent && (
-              <div className={`p-6 rounded-3xl border-2 mb-6 ${draftEvent.confidence === 'high' ? 'bg-green-50 border-green-400' : 'bg-red-50 border-red-400'
-                }`}>
-                <h3 className="font-black text-xl mb-2">
-                  {draftEvent.confidence === 'high' ? 'Confirm Draft' : 'Low Confidence - Please Retry'}
-                </h3>
-
-                <p className="text-gray-700 font-bold mb-4">{draftEvent.readBackText}</p>
-
-                {draftEvent.confidence === 'high' && (
-                  <button
-                    disabled={postingVoiceEvent}
-                    onClick={async () => {
-                      setPostingVoiceEvent(true);
-                      try {
-                        const posted = await postLedgerEvent(
-                          draftEvent.type,
-                          draftEvent.weightMg,
-                          draftEvent.amount,
-                          `Voice Entry: ${transcript}`,
-                        );
-                        if (posted) setDraftEvent(null);
-                      } catch (postError) {
-                        setDemoError(postError instanceof Error ? postError.message : 'Could not post voice entry.');
-                      } finally {
-                        setPostingVoiceEvent(false);
-                      }
-                    }}
-                    className="w-full rounded-2xl bg-green-600 py-4 font-bold text-white shadow-md hover:bg-green-700 disabled:opacity-60"
-                  >
-                    {postingVoiceEvent ? 'Posting…' : `Confirm & Post (${draftEvent.type === 'payment' ? `₹${draftEvent.amount.toLocaleString()}` : `${draftEvent.weightMg} mg`})`}
-                  </button>
-                )}
-
-                <button
-                  onClick={() => setDraftEvent(null)}
-                  className="w-full mt-3 bg-gray-200 text-gray-800 py-3 rounded-2xl font-bold hover:bg-gray-300"
-                >
-                  Cancel
-                </button>
-              </div>
-            )}
-
-            {!activeOrderId && !draftEvent && (
-              <button onClick={handleCreateOrder} className="w-full flex items-center justify-center gap-3 bg-gray-900 text-white py-5 rounded-2xl text-xl font-bold shadow-md active:scale-95">
-                <PlusCircle size={28} /> {t.createOrder}
-              </button>
-            )}
-
-            {activeOrderId && balance === 0 && !draftEvent
-              && !pendingEvents.some((event) => event.type === 'issue' && event.createdBy === user.id) && (
-              <button onClick={() => postLedgerEvent('issue', 5000)} className="w-full flex items-center justify-center gap-3 bg-amber-500 text-white py-5 rounded-2xl text-xl font-bold shadow-md active:scale-95">
-                <PlusCircle size={28} /> {t.issueGoldTo}
-              </button>
-            )}
-
-            {activeOrderId && balance > 0 && !proposal && !draftEvent && (
-              <button onClick={handleGenerateSettlement} className="w-full flex items-center justify-center gap-3 bg-indigo-600 text-white py-5 rounded-2xl text-xl font-bold shadow-md active:scale-95">
-                <FileText size={28} /> {t.generateSettlement}
-              </button>
-            )}
-
-            {proposal && (
-              <div className="bg-indigo-50 p-5 rounded-3xl border border-indigo-200">
-                <pre className="text-indigo-900 font-mono text-sm whitespace-pre-wrap font-bold">{proposal.breakdown}</pre>
-                <button onClick={() => postLedgerEvent('settlement', balance, proposal.amountDue, proposal.breakdown)} className="w-full mt-4 flex items-center justify-center gap-3 bg-indigo-700 text-white py-4 rounded-2xl text-lg font-bold shadow-md active:scale-95">
-                  <CheckCircle size={24} /> {t.sendProposal} ({formatPaise(proposal.amountDue)})
-                </button>
-              </div>
-            )}
-
-            {activeOrderId && balance > 0 && !proposal && !draftEvent && (
-              <button
-                onClick={() => {
-                  postLedgerEvent('payment', 0, 0, 'SIMULATED payment under the stored agreement rate policy.');
-                }}
-                className="w-full flex items-center justify-center gap-3 bg-emerald-600 text-white py-5 rounded-2xl text-xl font-bold shadow-md active:scale-95"
-              >
-                <Banknote size={28} /> {t.simulatePayment}
-              </button>
-            )}
-          </div>
+        {(activeScreen === 'karigars' || activeScreen === 'karigar-detail') && (
+          <KarigarWorkspace
+            userId={user.id}
+            language={panelLanguage}
+            karigarId={activeScreen === 'karigar-detail' ? selectedKarigarId : undefined}
+            onLanguageChange={setLang}
+            onSelectKarigar={(karigarId) => {
+              setSelectedKarigarId(karigarId);
+              setActiveScreen(karigarId ? 'karigar-detail' : 'karigars');
+            }}
+            onOpenOrder={openOrder}
+          />
         )}
 
-        {pendingEvents.map((event) => (
-          <div id={`ledger-event-${event.id}`} key={event.id} className="min-w-0 rounded-3xl border border-amber-300 bg-amber-50 p-4 text-amber-950 shadow-sm sm:p-5">
-            <h3 className="break-words font-black">{t.pendingLabel} {event.type.replaceAll('_', ' ').toUpperCase()}</h3>
-            {event.type === 'settlement' && event.notes ? (
-              <pre className="mt-3 whitespace-pre-wrap break-words rounded-xl border border-amber-200 bg-white p-3 text-sm font-semibold">{event.notes}</pre>
-            ) : event.type === 'payment' ? (
-              <p className="mt-2 break-words font-semibold">Amount: {formatPaise(event.amount)} · SIMULATED</p>
-            ) : (
-              <p className="mt-2 break-words font-semibold">Amount: {event.weightMg.toLocaleString()} {t.mg}</p>
+        {activeScreen === 'orders' && (
+          <>
+            <section className="space-y-3 rounded-2xl bg-white p-4 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-lg font-black">Orders</h2>
+                <button
+                  type="button"
+                  onClick={() => void handleCreateOrder()}
+                  className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-gray-900 px-4 font-bold text-white"
+                >
+                  <PlusCircle aria-hidden="true" size={18} />
+                  Create order
+                </button>
+              </div>
+              <details>
+                <summary className="cursor-pointer rounded-xl bg-gray-50 p-3 font-bold">
+                  Open a job · {demoOrders.length}
+                </summary>
+                <div className="mt-2 space-y-2">
+                  {demoOrders.length === 0 && <p className="text-sm text-gray-600">No jobs yet.</p>}
+                  {demoOrders.map((order) => (
+                    <button
+                      key={order.id}
+                      type="button"
+                      onClick={() => openOrder(order.id)}
+                      className="min-h-11 w-full rounded-xl border border-gray-200 p-3 text-left font-semibold"
+                    >
+                      {order.description}
+                    </button>
+                  ))}
+                </div>
+              </details>
+              <details>
+                <summary className="cursor-pointer rounded-xl bg-gray-50 p-3 font-bold">
+                  Customer deadline and rescue plan
+                </summary>
+                <div className="mt-3">
+                  <DeadlinePanel userId={user.id} role="jeweller" view="rescue" />
+                </div>
+              </details>
+            </section>
+
+            <details className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+              <summary className="cursor-pointer font-black">Issue gold and review owner approvals</summary>
+              <div className="mt-3">
+                <KarigarFloatPanel
+                  userId={user.id}
+                  role="jeweller"
+                  language={panelLanguage}
+                  view="issue"
+                  onSelectOrder={openOrder}
+                />
+              </div>
+            </details>
+
+            {inboxEvents.length > 0 && (
+              <details className="rounded-2xl border border-amber-200 bg-white p-4 shadow-sm">
+                <summary className="cursor-pointer font-black">Ledger approvals · {inboxEvents.length}</summary>
+                <div className="mt-3 space-y-2">
+                  {inboxEvents.map((event) => (
+                    <button
+                      key={event.id}
+                      type="button"
+                      onClick={() => openOrder(event.orderId)}
+                      className="min-h-12 w-full rounded-xl bg-amber-50 p-3 text-left"
+                    >
+                      <strong className="block">{event.description || 'Gold work'} · {event.type.replaceAll('_', ' ')}</strong>
+                      <span className="text-sm">
+                        {event.type === 'payment' || event.type === 'settlement'
+                          ? `${formatPaise(event.amount)} · SIMULATED`
+                          : `${event.weightMg.toLocaleString()} ${t.mg}`}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </details>
             )}
-            {(event.type === 'return' || event.type === 'issue') && event.notes && (
-              <p className="mt-2 whitespace-pre-wrap break-words text-sm font-semibold">{event.notes}</p>
+          </>
+        )}
+
+        {activeScreen === 'order-detail' && activeOrderId && (
+          <>
+            <button
+              type="button"
+              onClick={() => navigateTo('orders')}
+              className="min-h-11 font-bold text-indigo-800"
+            >
+              ← Back to orders
+            </button>
+            <section id={`order-${activeOrderId}`} className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-black">
+                  {demoOrders.find((order) => order.id === activeOrderId)?.description ?? t.currentOrder}
+                </h2>
+                <p className="text-sm text-gray-600">
+                  {t.balance}: {(balance / 1000).toLocaleString('en-IN', { minimumFractionDigits: 3, maximumFractionDigits: 3 })} g
+                </p>
+              </div>
+              {balance === 0 && (
+                <button
+                  type="button"
+                  onClick={() => void postLedgerEvent('issue', 5000)}
+                  className="min-h-12 rounded-xl bg-amber-600 px-4 font-black text-white"
+                >
+                  Issue 5 g
+                </button>
+              )}
+              {balance > 0 && !proposal && (
+                <button
+                  type="button"
+                  onClick={() => void handleGenerateSettlement()}
+                  className="min-h-12 rounded-xl bg-indigo-700 px-4 font-black text-white"
+                >
+                  {t.generateSettlement}
+                </button>
+              )}
+            </section>
+
+            {canUseOrderPanels && (
+              <details className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+                <summary className="cursor-pointer font-black">Agreement, Fair Pay and return check</summary>
+                <div className="mt-3 space-y-3">
+                  <details
+                    className="rounded-xl bg-gray-50 p-3"
+                    onToggle={(event) => setAgreementPanelOpen(event.currentTarget.open)}
+                  >
+                    <summary className="cursor-pointer font-bold">Agreement and Fair Pay</summary>
+                    {agreementPanelOpen && (
+                      <AgreementPanel
+                        orderId={activeOrderId}
+                        userId={user.id}
+                        role="jeweller"
+                        language={panelLanguage}
+                      />
+                    )}
+                  </details>
+                  <details
+                    className="rounded-xl bg-gray-50 p-3"
+                    onToggle={(event) => setReturnCheckOpen(event.currentTarget.open)}
+                  >
+                    <summary className="cursor-pointer font-bold">Purity check and fine-gold waterfall</summary>
+                    {returnCheckOpen && (
+                      <ReturnReconciliationPanel
+                        orderId={activeOrderId}
+                        userId={user.id}
+                        language={panelLanguage}
+                        onSubmitted={() => {
+                          void fetchBalance(activeOrderId);
+                          void fetchPendingEvents(activeOrderId, user.id)
+                            .catch((loadError: Error) => setDemoError(loadError.message));
+                        }}
+                      />
+                    )}
+                  </details>
+                </div>
+              </details>
             )}
-            {event.createdBy === user.id ? (
-              <p className="mt-3 break-words text-sm font-bold">{t.pendingLabel} awaiting the other party.</p>
-            ) : (
-              <button onClick={() => handleAcknowledge(event)} className="mt-3 flex w-full items-center justify-center gap-3 rounded-2xl bg-green-600 py-4 font-bold text-white shadow-md">
-                <CheckCircle size={22} /> {t.ack}
-              </button>
+
+            <details
+              id="order-approvals"
+              open={briefTarget?.category === 'pending_approval'}
+              className="rounded-2xl border border-amber-200 bg-white p-4 shadow-sm"
+            >
+              <summary className="cursor-pointer font-black">Settlement and approvals · {pendingEvents.length}</summary>
+              <div className="mt-3 space-y-3">
+                {pendingEvents.length === 0 && <p className="text-sm text-gray-600">No approvals waiting for this job.</p>}
+                {pendingEvents.map((event) => (
+                  <article id={`ledger-event-${event.id}`} key={event.id} className="rounded-xl bg-amber-50 p-3">
+                    <h3 className="font-bold">{event.type.replaceAll('_', ' ')}</h3>
+                    {event.type === 'settlement' && event.notes ? (
+                      <pre className="mt-2 whitespace-pre-wrap text-sm">{event.notes}</pre>
+                    ) : event.type === 'payment' ? (
+                      <p className="mt-2 font-semibold">{formatPaise(event.amount)} · SIMULATED</p>
+                    ) : (
+                      <p className="mt-2 font-semibold">{event.weightMg.toLocaleString()} {t.mg}</p>
+                    )}
+                    {event.createdBy === user.id
+                      ? <p className="mt-2 text-sm">{t.pendingLabel} awaiting the other party.</p>
+                      : (
+                        <button
+                          type="button"
+                          onClick={() => void handleAcknowledge(event)}
+                          className="mt-3 min-h-11 rounded-xl bg-green-700 px-4 font-bold text-white"
+                        >
+                          <CheckCircle aria-hidden="true" className="mr-2 inline" size={18} />{t.ack}
+                        </button>
+                      )}
+                  </article>
+                ))}
+                {proposal && (
+                  <article className="rounded-xl bg-indigo-50 p-3">
+                    <pre className="whitespace-pre-wrap text-sm font-semibold">{proposal.breakdown}</pre>
+                    <button
+                      type="button"
+                      onClick={() => void postLedgerEvent('settlement', balance, proposal.amountDue, proposal.breakdown)}
+                      className="mt-3 min-h-11 rounded-xl bg-indigo-700 px-4 font-bold text-white"
+                    >
+                      <FileText aria-hidden="true" className="mr-2 inline" size={18} />
+                      {t.sendProposal} · {formatPaise(proposal.amountDue)}
+                    </button>
+                  </article>
+                )}
+                {balance > 0 && !proposal && (
+                  <button
+                    type="button"
+                    onClick={() => void postLedgerEvent('payment', 0, 0, 'SIMULATED payment under the stored agreement rate policy.')}
+                    className="min-h-11 rounded-xl bg-emerald-700 px-4 font-bold text-white"
+                  >
+                    <Banknote aria-hidden="true" className="mr-2 inline" size={18} />{t.simulatePayment}
+                  </button>
+                )}
+              </div>
+            </details>
+
+            <details
+              id="order-history-details"
+              open={briefTarget?.category === 'escalated_dispute' || briefTarget?.category === 'custody_approval'}
+              className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm"
+            >
+              <summary className="cursor-pointer font-black">Disputes and verified gold history</summary>
+              <div className="mt-3 space-y-3">
+                <details
+                  id="dispute-entry"
+                  open={briefTarget?.category === 'escalated_dispute'}
+                  className="rounded-xl bg-gray-50 p-3"
+                >
+                  <summary className="cursor-pointer font-bold">Disputes</summary>
+                  {canUseOrderPanels && (
+                    <DisputePanel
+                      orderId={activeOrderId}
+                      userId={user.id}
+                      role="jeweller"
+                      language={panelLanguage}
+                      focusEventId={briefTarget?.category === 'escalated_dispute' ? briefTarget.eventId : null}
+                    />
+                  )}
+                </details>
+                <details open={briefTarget?.category === 'custody_approval'} className="rounded-xl bg-gray-50 p-3">
+                  <summary className="cursor-pointer font-bold">Gold journey and hash verification</summary>
+                  <GoldJourneyPanel orderId={activeOrderId} userId={user.id} />
+                </details>
+                <details className="rounded-xl bg-gray-50 p-3">
+                  <summary className="cursor-pointer font-bold">Voice entry</summary>
+                  <div className="mt-3 space-y-3">
+                    <button
+                      type="button"
+                      onClick={listen}
+                      className={`min-h-12 rounded-xl px-4 font-bold text-white ${isListening ? 'bg-red-600' : 'bg-gray-900'}`}
+                    >
+                      <Mic aria-hidden="true" className="mr-2 inline" size={18} />
+                      {isListening ? 'Listening…' : 'Speak an entry'}
+                    </button>
+                    {transcript && <p className="text-sm">Heard: “{transcript}”</p>}
+                    {speechError && <p role="alert" className="text-sm font-semibold text-red-700">{speechError}</p>}
+                    {draftEvent && (
+                      <div className="rounded-xl bg-indigo-50 p-3">
+                        <p className="font-semibold">{draftEvent.readBackText}</p>
+                        {draftEvent.confidence === 'high' && (
+                          <button
+                            type="button"
+                            disabled={postingVoiceEvent}
+                            onClick={async () => {
+                              setPostingVoiceEvent(true);
+                              try {
+                                const posted = await postLedgerEvent(
+                                  draftEvent.type,
+                                  draftEvent.weightMg,
+                                  draftEvent.amount,
+                                  `Voice Entry: ${transcript}`,
+                                );
+                                if (posted) setDraftEvent(null);
+                              } catch (postError) {
+                                setDemoError(postError instanceof Error ? postError.message : 'Could not post voice entry.');
+                              } finally {
+                                setPostingVoiceEvent(false);
+                              }
+                            }}
+                            className="mt-3 min-h-11 rounded-xl bg-green-700 px-4 font-bold text-white"
+                          >
+                            {postingVoiceEvent ? 'Saving…' : 'Confirm entry'}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setDraftEvent(null)}
+                          className="ml-2 min-h-11 rounded-xl bg-gray-200 px-4 font-bold"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </details>
+              </div>
+            </details>
+          </>
+        )}
+
+        {activeScreen === 'records' && (
+          <>
+            <section className="space-y-3 rounded-2xl bg-white p-4 shadow-sm">
+              <h2 className="text-lg font-black">Records</h2>
+              <details>
+                <summary className="cursor-pointer rounded-xl bg-gray-50 p-3 font-bold">
+                  Choose a job · {demoOrders.length}
+                </summary>
+                <div className="mt-2 space-y-2">
+                  {demoOrders.length === 0 && <p className="text-sm text-gray-600">No records yet.</p>}
+                  {demoOrders.map((order) => (
+                    <button
+                      key={order.id}
+                      type="button"
+                      onClick={() => setSelectedRecordOrderId(order.id)}
+                      className={`min-h-11 w-full rounded-xl p-3 text-left font-semibold ${selectedRecordOrderId === order.id ? 'bg-amber-100' : 'bg-gray-50'}`}
+                    >
+                      {order.description}
+                    </button>
+                  ))}
+                </div>
+              </details>
+              {!selectedRecordOrderId && (
+                <p className="text-sm text-gray-600">Choose a job to review disputes and its verified history.</p>
+              )}
+            </section>
+            {selectedRecordOrderId && (
+              <>
+                <details className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+                  <summary className="cursor-pointer font-black">Disputes and corrections</summary>
+                  <div className="mt-3">
+                    <DisputePanel
+                      orderId={selectedRecordOrderId}
+                      userId={user.id}
+                      role="jeweller"
+                      language={panelLanguage}
+                    />
+                  </div>
+                </details>
+                <details className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+                  <summary className="cursor-pointer font-black">Verified ledger and gold journey</summary>
+                  <div className="mt-3">
+                    <GoldJourneyPanel orderId={selectedRecordOrderId} userId={user.id} />
+                  </div>
+                </details>
+              </>
             )}
-          </div>
-        ))}
+          </>
+        )}
+
+        {activeScreen === 'more' && (
+          <>
+            <details className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+              <summary className="cursor-pointer font-black">Gold values, rate shock and rate policy</summary>
+              <div className="mt-3">
+                <DashboardPanel userId={user.id} role="jeweller" language={panelLanguage} onSelectOrder={openOrder} />
+              </div>
+            </details>
+            <details className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+              <summary className="cursor-pointer font-black">Early warning and synthetic replay</summary>
+              <div className="mt-3">
+                <KarigarFloatPanel userId={user.id} role="jeweller" language={panelLanguage} view="signals" />
+              </div>
+            </details>
+            <details className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+              <summary className="cursor-pointer font-black">Inbox and action log · {inboxEvents.length}</summary>
+              <div className="mt-3 space-y-3">
+                {inboxEvents.length === 0 && <p className="text-sm text-gray-600">Inbox is clear.</p>}
+                {inboxEvents.map((event) => (
+                  <button
+                    key={event.id}
+                    type="button"
+                    onClick={() => openOrder(event.orderId)}
+                    className="min-h-12 w-full rounded-xl bg-amber-50 p-3 text-left"
+                  >
+                    <strong className="block">{event.description || 'Gold work'} · {event.type.replaceAll('_', ' ')}</strong>
+                    <span className="text-sm">
+                      {event.type === 'payment' || event.type === 'settlement'
+                        ? `${formatPaise(event.amount)} · SIMULATED`
+                        : `${event.weightMg.toLocaleString()} ${t.mg}`}
+                    </span>
+                  </button>
+                ))}
+                <DeadlinePanel userId={user.id} role="jeweller" view="more" />
+                {showDemoControls && (
+                  <details className="rounded-xl bg-gray-50 p-3">
+                    <summary className="cursor-pointer font-bold">Demo controls · SIMULATED</summary>
+                    <div className="mt-3 space-y-3">
+                      <DailyBriefPanel
+                        userId={user.id}
+                        role="jeweller"
+                        language={panelLanguage}
+                        onOpenAction={openBriefAction}
+                        showActions={false}
+                      />
+                      <DeadlinePanel
+                        userId={user.id}
+                        role="jeweller"
+                        view="controls"
+                        showDemoControls
+                      />
+                    </div>
+                  </details>
+                )}
+              </div>
+            </details>
+          </>
+        )}
       </main>
+
+      <nav
+        aria-label="Jeweller navigation"
+        className="fixed inset-x-0 bottom-0 z-20 border-t border-gray-200 bg-white/95 p-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] backdrop-blur"
+      >
+        <div className="mx-auto grid max-w-2xl grid-cols-4 gap-1">
+          {routeManifest.tabs.map((tab) => {
+            const Icon = tab.id === 'home'
+              ? Home
+              : tab.id === 'karigars'
+                ? Users
+                : tab.id === 'orders'
+                  ? ClipboardList
+                  : BookOpen;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                aria-current={activeTab === tab.id ? 'page' : undefined}
+                onClick={() => navigateTo(tab.id as AppScreen)}
+                className={`flex min-h-14 flex-col items-center justify-center gap-1 rounded-xl text-xs font-bold ${activeTab === tab.id ? 'bg-amber-100 text-amber-950' : 'text-gray-600 hover:bg-gray-100'}`}
+              >
+                <Icon aria-hidden="true" size={20} />
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+      </nav>
     </div>
   );
 }

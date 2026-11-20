@@ -1,0 +1,52 @@
+{
+  "tabs": [
+    { "id": "home", "label": "Home" },
+    { "id": "karigars", "label": "Karigars" },
+    { "id": "orders", "label": "Orders" },
+    { "id": "records", "label": "Records" }
+  ],
+  "screens": [
+    { "id": "home", "tab": "home" },
+    { "id": "karigars", "tab": "karigars" },
+    { "id": "karigar-detail", "tab": "karigars" },
+    { "id": "orders", "tab": "orders" },
+    { "id": "order-detail", "tab": "orders" },
+    { "id": "records", "tab": "records" },
+    { "id": "more", "tab": null },
+    { "id": "karigar-slip", "tab": null, "role": "karigar" }
+  ],
+  "features": {
+    "gold-with-karigars": ["home"],
+    "daily-brief": ["home"],
+    "pending-approvals": ["home", "orders"],
+    "karigar-directory": ["karigars"],
+    "float-balance": ["karigar-detail", "more"],
+    "trust-ladder": ["karigar-detail", "more"],
+    "exposure-risk": ["karigar-detail", "more"],
+    "agreement-handshake": ["karigar-detail", "order-detail"],
+    "fair-pay": ["karigar-detail", "order-detail"],
+    "open-jobs": ["karigar-detail", "orders"],
+    "gold-journey": ["karigar-detail", "order-detail", "records"],
+    "paper-slip-access": ["karigar-detail"],
+    "order-create": ["orders"],
+    "issue-gold": ["order-detail", "more"],
+    "return-check": ["order-detail"],
+    "purity-check": ["order-detail"],
+    "fine-gold-waterfall": ["order-detail"],
+    "settlement-approvals": ["orders", "order-detail"],
+    "rescue-plan": ["orders"],
+    "disputes": ["records", "order-detail"],
+    "hash-verified-history": ["records", "order-detail"],
+    "rate-shock": ["more"],
+    "rate-policy": ["more"],
+    "exposure-replay": ["more"],
+    "simulated-inbox": ["more"],
+    "action-log": ["more"],
+    "daily-brief-demo-controls": ["more"],
+    "deadline-demo-controls": ["more"],
+    "voice-entry": ["order-detail"],
+    "custody-handoffs": ["order-detail", "records"],
+    "karigar-paper-slip": ["karigar-slip"],
+    "karigar-exposure-sentence": ["karigar-slip"]
+  }
+}

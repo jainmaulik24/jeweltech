@@ -246,9 +246,16 @@ interface Props {
   role: Role;
   language: Language;
   onSelectOrder?: (orderId: string) => void;
+  view?: 'all' | 'issue' | 'signals';
 }
 
-export default function KarigarFloatPanel({ userId, role, language, onSelectOrder }: Props) {
+export default function KarigarFloatPanel({
+  userId,
+  role,
+  language,
+  onSelectOrder,
+  view = 'all',
+}: Props) {
   const text = labels[language];
   const [karigarHome, setKarigarHome] = useState<KarigarHomeData | null>(null);
   const [jewellerData, setJewellerData] = useState<JewellerFloatData | null>(null);
@@ -443,7 +450,7 @@ export default function KarigarFloatPanel({ userId, role, language, onSelectOrde
       </div>
       {error && <p role="alert" className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-800">{error}</p>}
       {notice && <p role="status" className="rounded-xl bg-green-50 p-3 text-sm font-semibold text-green-900">{notice}</p>}
-      {jewellerData && (
+      {jewellerData && view !== 'issue' && (
         <section className="space-y-3 rounded-2xl border-2 border-indigo-300 bg-indigo-50 p-3">
           <div>
             <h3 className="font-black text-indigo-950">{text.exposure}</h3>
@@ -475,7 +482,7 @@ export default function KarigarFloatPanel({ userId, role, language, onSelectOrde
           })}
         </section>
       )}
-      {jewellerData && (
+      {jewellerData && view !== 'signals' && (
         <>
           <form onSubmit={issueFloat} className="space-y-3 rounded-2xl bg-gray-50 p-3">
             <label className="block text-sm font-bold">
@@ -569,15 +576,15 @@ export default function KarigarFloatPanel({ userId, role, language, onSelectOrde
               ))}
             </section>
           )}
-          {jewellerData.syntheticReplay && (
-            <SyntheticExposureReplay
-              replay={jewellerData.syntheticReplay}
-              day={Math.min(replayDay, jewellerData.syntheticReplay.days.length - 1)}
-              onDayChange={setReplayDay}
-              text={text}
-            />
-          )}
         </>
+      )}
+      {jewellerData && view !== 'issue' && jewellerData.syntheticReplay && (
+        <SyntheticExposureReplay
+          replay={jewellerData.syntheticReplay}
+          day={Math.min(replayDay, jewellerData.syntheticReplay.days.length - 1)}
+          onDayChange={setReplayDay}
+          text={text}
+        />
       )}
     </section>
   );

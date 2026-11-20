@@ -100,6 +100,7 @@ interface Props {
   role: Role;
   language: Language;
   onSelectOrder: (orderId: string) => void;
+  view?: 'full' | 'summary';
 }
 
 const text = {
@@ -211,7 +212,13 @@ const dueLabel = (order: DashboardOrder, labels: typeof text.en) => {
   return `${order.daysToDue} ${labels.dueIn}`;
 };
 
-export default function DashboardPanel({ userId, role, language, onSelectOrder }: Props) {
+export default function DashboardPanel({
+  userId,
+  role,
+  language,
+  onSelectOrder,
+  view = 'full',
+}: Props) {
   const labels = text[language];
   const [data, setData] = useState<DashboardData | null>(null);
   const [shockPercent, setShockPercent] = useState<number | null>(null);
@@ -310,6 +317,19 @@ export default function DashboardPanel({ userId, role, language, onSelectOrder }
     </button>
   );
 
+  if (view === 'summary') {
+    return (
+      <section aria-label="Gold with karigars" className="rounded-2xl bg-gray-900 p-4 text-white shadow-sm">
+        <h1 className="text-lg font-black">Gold with karigars</h1>
+        <p className="mt-2 text-3xl font-black">{grams(data.totals.karigarHeldFineMg)}</p>
+        <p className="font-bold text-amber-300">{money(data.totals.karigarHeldValuePaise)}</p>
+        <p className="mt-2 text-sm text-gray-200">
+          Today's 24K rate · {money(data.rate.rate24KPaisePerGram)}/g · {data.rate.label} · {data.rate.sourceDate}
+        </p>
+      </section>
+    );
+  }
+
   return (
     <section className="min-w-0 space-y-4" aria-live="polite">
       {error && <p role="alert" className="break-words rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-800">{error}</p>}
@@ -384,30 +404,117 @@ export default function DashboardPanel({ userId, role, language, onSelectOrder }
         </div>
       </article>
 
-      <div className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
-        <section className="min-w-0 space-y-3 rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
-          <h3 className="break-words font-black text-gray-900">{labels.stages}</h3>
-          {data.stages.map((stage) => (
-            <div key={stage.account} className="min-w-0">
-              <div className="flex flex-wrap justify-between gap-2 text-sm">
-                <span className="break-words font-semibold">{stage.label} · {grams(stage.fineGoldMg)}</span>
-                <strong className="break-words">{money(stage.valuePaise)}</strong>
+      <details className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+        <summary className="cursor-pointer font-black">{labels.stages}, ageing and cash policy</summary>
+        <div className="mt-3 grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
+          <section className="min-w-0 space-y-3 rounded-xl bg-gray-50 p-3">
+            <h3 className="font-black text-gray-900">{labels.stages}</h3>
+            {data.stages.map((stage) => (
+              <div key={stage.account} className="min-w-0">
+                <div className="flex flex-wrap justify-between gap-2 text-sm">
+                  <span className="break-words font-semibold">{stage.label} · {grams(stage.fineGoldMg)}</span>
+                  <strong className="break-words">{money(stage.valuePaise)}</strong>
+                </div>
+                <div className="mt-1 h-2 overflow-hidden rounded-full bg-gray-100">
+                  <div className="h-full rounded-full bg-amber-500" style={{ width: `${stage.sharePercent}%` }} />
+                </div>
               </div>
-              <div className="mt-1 h-2 overflow-hidden rounded-full bg-gray-100">
-                <div className="h-full rounded-full bg-amber-500" style={{ width: `${stage.sharePercent}%` }} />
+            ))}
+          </section>
+          <section className="min-w-0 space-y-3 rounded-xl bg-gray-50 p-3">
+            <h3 className="font-black text-gray-900">{labels.ageing}</h3>
+            {data.ageing.map((bucket) => (
+              <div key={bucket.label} className="min-w-0">
+                <div className="flex flex-wrap justify-between gap-2 text-sm">
+                  <span className="font-semibold">{bucket.label} · {grams(bucket.fineGoldMg)}</span>
+                  <strong>{money(bucket.valuePaise)}</strong>
+                </div>
+                <div className="mt-1 h-2 overflow-hidden rounded-full bg-gray-100">
+                  <div className="h-full rounded-full bg-indigo-500" style={{ width: `${bucket.sharePercent}%` }} />
+                </div>
               </div>
-            </div>
-          ))}
-        </section>
+            ))}
+          </section>
+          <section className="min-w-0 space-y-3 rounded-xl bg-gray-50 p-3">
+            <h3 className="font-black text-gray-900">{labels.policy} · {data.rate.label}</h3>
+            {([
+              ['issue', labels.issueDate],
+              ['return', labels.returnDate],
+              ['settlement', labels.settlementDate],
+            ] as const).map(([policy, label]) => (
+              <div key={policy} className="flex min-w-0 flex-wrap justify-between gap-2 rounded-xl bg-white p-3">
+                <span className="break-words font-semibold">{label}</span>
+                <strong>{money((role === 'karigar' ? data.karigarCashPolicyAmountsPaise : data.cashPolicyAmountsPaise)[policy])}</strong>
+              </div>
+            ))}
+          </section>
+        </div>
+      </details>
 
-        <section className="min-w-0 space-y-3 rounded-3xl border border-red-200 bg-white p-4 shadow-sm">
-          <h3 className="break-words font-black text-gray-900">{labels.escalations}</h3>
+      <details className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+        <summary className="cursor-pointer font-black">{labels.concentration} and jobs</summary>
+        {role === 'jeweller' ? (
+          <div className="mt-3 space-y-2">
+            {data.karigars.map((karigar) => (
+              <div key={karigar.id} className="min-w-0 rounded-xl bg-gray-50 p-3">
+                <button onClick={() => setSelectedKarigarId(selectedKarigarId === karigar.id ? null : karigar.id)} className="w-full min-w-0 text-left">
+                  <span className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                    <strong className="break-words">{karigar.name}</strong>
+                    <span className="break-words text-sm">{grams(karigar.fineGoldMg)} · {money(karigar.valuePaise)}</span>
+                  </span>
+                  <span className="mt-1 block text-xs text-gray-600">
+                    {karigar.concentrationPercent}% · {karigar.openJobsCount} {karigar.openJobsCount === 1 ? labels.openJob : labels.openJobs} · {karigar.oldestAgeDays} days
+                  </span>
+                </button>
+                {selectedKarigarId === karigar.id && (
+                  <div className="mt-3 space-y-2 border-t border-gray-100 pt-3">
+                    <p className="text-sm font-bold text-gray-700">{labels.drilldown}</p>
+                    {karigar.orders.filter((order) => order.status === 'open').map(openJobButton)}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="mt-3 grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
+            <section className="min-w-0 space-y-3 rounded-xl bg-gray-50 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="font-black text-gray-900">{labels.cashOwed}</h3>
+                <strong className="text-lg text-emerald-700">{money(data.totals.cashOwedPaise)}</strong>
+              </div>
+              <p className="text-xs text-gray-500">{labels.cashFixed}</p>
+              {data.orders.filter((order) => order.cashOwedPaise > 0).map((order) => (
+                <div key={order.id} className="flex min-w-0 flex-wrap justify-between gap-2 rounded-xl bg-white p-3 text-sm">
+                  <span className="min-w-0 break-words">{order.description} · {order.cashAgeDays} {labels.cashAge}</span>
+                  <strong>{money(order.cashOwedPaise)}</strong>
+                </div>
+              ))}
+            </section>
+            <section className="min-w-0 space-y-3 rounded-xl bg-gray-50 p-3">
+              <h3 className="font-black text-gray-900">{labels.jobsDue}</h3>
+              {data.orders.filter((order) => order.status === 'open').map((order) => (
+                <div key={order.id} className="space-y-2">
+                  <p className="break-words text-sm font-semibold text-gray-700">
+                    {order.description} · {dueLabel(order, labels)}
+                  </p>
+                  {openJobButton(order)}
+                </div>
+              ))}
+              {data.orders.every((order) => order.status !== 'open') && <p className="text-sm text-gray-600">{labels.noJobs}</p>}
+            </section>
+          </div>
+        )}
+      </details>
+
+      <details className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+        <summary className="cursor-pointer font-black">{labels.pending} and {labels.escalations}</summary>
+        <section className="mt-3 space-y-3">
           {escalationError && <p role="alert" className="break-words text-sm font-semibold text-red-700">{escalationError}</p>}
           {escalatedDisputes.map((dispute) => (
             <button
               key={dispute.id}
               onClick={() => onSelectOrder(dispute.orderId)}
-              className="flex min-w-0 w-full flex-wrap items-start justify-between gap-2 rounded-xl bg-red-50 p-3 text-left hover:bg-red-100"
+              className="flex min-w-0 w-full flex-wrap items-start justify-between gap-2 rounded-xl bg-red-50 p-3 text-left"
             >
               <span className="min-w-0">
                 <strong className="block break-words text-sm text-gray-900">{dispute.description}</strong>
@@ -419,123 +526,29 @@ export default function DashboardPanel({ userId, role, language, onSelectOrder }
             </button>
           ))}
           {!escalationError && escalatedDisputes.length === 0 && <p className="text-sm text-gray-600">{labels.escalationEmpty}</p>}
-        </section>
-
-        <section className="min-w-0 space-y-3 rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
-          <h3 className="break-words font-black text-gray-900">{labels.policy} · {data.rate.label}</h3>
-          {([
-            ['issue', labels.issueDate],
-            ['return', labels.returnDate],
-            ['settlement', labels.settlementDate],
-          ] as const).map(([policy, label]) => (
-            <div key={policy} className="flex min-w-0 flex-wrap justify-between gap-2 rounded-xl bg-gray-50 p-3">
-              <span className="break-words font-semibold">{label}</span>
-              <strong className="break-words">
-                {money((role === 'karigar' ? data.karigarCashPolicyAmountsPaise : data.cashPolicyAmountsPaise)[policy])}
-              </strong>
-            </div>
-          ))}
-        </section>
-      </div>
-
-      <section className="min-w-0 space-y-3 rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
-        <h3 className="break-words font-black text-gray-900">{labels.ageing}</h3>
-        {data.ageing.map((bucket) => (
-          <div key={bucket.label} className="min-w-0">
-            <div className="flex flex-wrap justify-between gap-2 text-sm">
-              <span className="font-semibold">{bucket.label} · {grams(bucket.fineGoldMg)}</span>
-              <strong>{money(bucket.valuePaise)}</strong>
-            </div>
-            <div className="mt-1 h-2 overflow-hidden rounded-full bg-gray-100">
-              <div className="h-full rounded-full bg-indigo-500" style={{ width: `${bucket.sharePercent}%` }} />
-            </div>
-          </div>
-        ))}
-      </section>
-
-      {role === 'jeweller' ? (
-        <section className="min-w-0 space-y-3 rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
-          <h3 className="break-words font-black text-gray-900">{labels.concentration}</h3>
-          {data.karigars.map((karigar) => (
-            <div key={karigar.id} className="min-w-0 rounded-xl border border-gray-100 p-3">
-              <button onClick={() => setSelectedKarigarId(selectedKarigarId === karigar.id ? null : karigar.id)} className="w-full min-w-0 text-left">
-                <span className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-                  <strong className="break-words">{karigar.name}</strong>
-                  <span className="break-words text-sm">{grams(karigar.fineGoldMg)} · {money(karigar.valuePaise)}</span>
-                </span>
-                <span className="mt-1 block text-xs text-gray-600">
-                  {karigar.concentrationPercent}% · {karigar.openJobsCount} {karigar.openJobsCount === 1 ? labels.openJob : labels.openJobs} · {karigar.oldestAgeDays} days
-                </span>
-                <span className="mt-2 block h-2 overflow-hidden rounded-full bg-gray-100">
-                  <span className="block h-full rounded-full bg-emerald-500" style={{ width: `${karigar.concentrationPercent}%` }} />
-                </span>
+          {data.pendingAcknowledgements.map((event) => (
+            <div key={event.id} className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-50 p-3">
+              <span className="min-w-0 break-words text-sm font-semibold">
+                {event.description} · {event.type === 'agreement_version'
+                  ? `v${event.agreementVersion} ${labels.agreementPending}`
+                  : `${event.type.replaceAll('_', ' ')} · ${event.amount > 0 ? money(event.amount) : grams(event.weightMg)}`}
+              </span>
+              <button onClick={() => onSelectOrder(event.orderId)} className="shrink-0 rounded-lg bg-amber-700 px-3 py-2 text-sm font-bold text-white">
+                {labels.pendingReview}
               </button>
-              {selectedKarigarId === karigar.id && (
-                <div className="mt-3 space-y-2 border-t border-gray-100 pt-3">
-                  <p className="text-sm font-bold text-gray-700">{labels.drilldown}</p>
-                  {karigar.orders.filter((order) => order.status === 'open').map(openJobButton)}
-                </div>
-              )}
             </div>
           ))}
+          {data.pendingAcknowledgements.length === 0 && <p className="text-sm text-gray-600">{labels.noPending}</p>}
         </section>
-      ) : (
-        <div className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
-          <section className="min-w-0 space-y-3 rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="break-words font-black text-gray-900">{labels.cashOwed}</h3>
-              <strong className="text-lg text-emerald-700">{money(data.totals.cashOwedPaise)}</strong>
-            </div>
-            <p className="text-xs text-gray-500">{labels.cashFixed}</p>
-            {data.orders.filter((order) => order.cashOwedPaise > 0).map((order) => (
-              <div key={order.id} className="flex min-w-0 flex-wrap justify-between gap-2 rounded-xl bg-gray-50 p-3 text-sm">
-                <span className="min-w-0 break-words">{order.description} · {order.cashAgeDays} {labels.cashAge}</span>
-                <strong className="shrink-0">{money(order.cashOwedPaise)}</strong>
-              </div>
-            ))}
-          </section>
-          <section className="min-w-0 space-y-3 rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
-            <h3 className="break-words font-black text-gray-900">{labels.jobsDue}</h3>
-            {data.orders.filter((order) => order.status === 'open').map((order) => (
-              <div key={order.id} className="space-y-2">
-                <p className="break-words text-sm font-semibold text-gray-700">
-                  {order.description} · {dueLabel(order, labels)}
-                </p>
-                {openJobButton(order)}
-              </div>
-            ))}
-            {data.orders.every((order) => order.status !== 'open') && <p className="text-sm text-gray-600">{labels.noJobs}</p>}
-          </section>
-        </div>
-      )}
+      </details>
 
-      <section className="min-w-0 space-y-3 rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="break-words font-black text-gray-900">{labels.pending}</h3>
-          {role === 'jeweller' && <button onClick={speakSummary} aria-label={labels.readAloud} className="rounded-full bg-gray-100 p-2 text-gray-800"><Volume2 size={20} /></button>}
-        </div>
-        {data.pendingAcknowledgements.map((event) => (
-          <div key={event.id} className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-50 p-3">
-            <span className="min-w-0 break-words text-sm font-semibold">
-              {event.description} · {event.type === 'agreement_version'
-                ? `v${event.agreementVersion} ${labels.agreementPending}`
-                : `${event.type.replaceAll('_', ' ')} · ${event.amount > 0 ? money(event.amount) : grams(event.weightMg)}`}
-            </span>
-            <button onClick={() => onSelectOrder(event.orderId)} className="shrink-0 rounded-lg bg-amber-700 px-3 py-2 text-sm font-bold text-white">
-              {labels.pendingReview}
-            </button>
-          </div>
-        ))}
-        {data.pendingAcknowledgements.length === 0 && <p className="text-sm text-gray-600">{labels.noPending}</p>}
-      </section>
-
-      {role === 'jeweller' && (
-        <section className="min-w-0 space-y-3 rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
-          <h3 className="break-words font-black text-gray-900">{labels.jobsDue} · {data.totals.openJobsCount}</h3>
+      <details className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+        <summary className="cursor-pointer font-black">{labels.jobsDue} · {data.totals.openJobsCount}</summary>
+        <section className="mt-3 space-y-2">
           {data.orders.filter((order) => order.status === 'open').map(openJobButton)}
           {data.orders.every((order) => order.status !== 'open') && <p className="text-sm text-gray-600">{labels.noJobs}</p>}
         </section>
-      )}
+      </details>
     </section>
   );
 }

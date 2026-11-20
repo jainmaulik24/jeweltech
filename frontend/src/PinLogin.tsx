@@ -24,6 +24,12 @@ export default function PinLogin({ language, onLanguageChange, onLogin }: Props)
   const [busy, setBusy] = useState(false);
   const text = localeText[language].app;
 
+  const fillDemoCredentials = (demoPhone: string) => {
+    setPhone(demoPhone);
+    setPin('1234');
+    setError('');
+  };
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (busy || pin.length < 4 || !phone.trim()) return;
@@ -32,10 +38,29 @@ export default function PinLogin({ language, onLanguageChange, onLogin }: Props)
     try {
       const response = await fetch('/api/auth/pin-login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({ phone: phone.trim(), pin }),
       });
-      const data = await response.json() as Partial<LoginUser> & { error?: string };
+      const responseBody = await response.text();
+      if (!responseBody.trim()) {
+        console.error('PIN login returned an empty response.', {
+          status: response.status,
+          contentType: response.headers.get('content-type'),
+        });
+        throw new Error(text.pinServiceUnavailable);
+      }
+
+      let data: Partial<LoginUser> & { error?: string };
+      try {
+        data = JSON.parse(responseBody) as Partial<LoginUser> & { error?: string };
+      } catch (parseError) {
+        console.error('PIN login returned a non-JSON response.', {
+          status: response.status,
+          contentType: response.headers.get('content-type'),
+          error: parseError,
+        });
+        throw new Error(text.pinServiceUnavailable, { cause: parseError });
+      }
       if (!response.ok) throw new Error(data.error ?? text.pinError);
       if (!data.id || !data.name
         || (data.role !== 'jeweller' && data.role !== 'karigar' && data.role !== 'staff')) {
@@ -43,7 +68,9 @@ export default function PinLogin({ language, onLanguageChange, onLogin }: Props)
       }
       onLogin({ id: data.id, name: data.name, role: data.role });
     } catch (loginError) {
-      setError(loginError instanceof Error ? loginError.message : text.pinError);
+      setError(loginError instanceof TypeError
+        ? text.pinServiceUnavailable
+        : loginError instanceof Error ? loginError.message : text.pinError);
     } finally {
       setBusy(false);
     }
@@ -80,6 +107,22 @@ export default function PinLogin({ language, onLanguageChange, onLogin }: Props)
       </div>
       <h1 className="mb-2 text-center text-3xl font-black text-amber-700">{text.login}</h1>
       <p className="mb-7 text-center text-sm font-medium text-gray-700">{text.pinHelp}</p>
+      <div className="mb-5 grid grid-cols-2 gap-3">
+        <button
+          type="button"
+          onClick={() => fillDemoCredentials('111')}
+          className="min-h-12 rounded-xl border border-amber-700 bg-amber-50 px-3 text-sm font-bold text-amber-950"
+        >
+          {text.demoJeweller}
+        </button>
+        <button
+          type="button"
+          onClick={() => fillDemoCredentials('333')}
+          className="min-h-12 rounded-xl border border-amber-700 bg-amber-50 px-3 text-sm font-bold text-amber-950"
+        >
+          {text.demoKarigar}
+        </button>
+      </div>
       <form onSubmit={submit} className="space-y-5">
         <label className="block text-lg font-bold">
           {text.phone}
