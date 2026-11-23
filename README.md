@@ -1,10 +1,10 @@
-# Jeweltech
+# Parchi
 
 **A shared, auditable gold job-work ledger for jewellers and karigars.**
 
-Jeweltech is a prototype for Tech4Bharat 2026 problem statement 2.2 (Jeweltech, Agentic AI). It addresses a familiar workshop problem: gold is issued to a karigar for job-work, finished pieces and scrap come back later, and the weights, agreed wastage, deadlines, and payments are often tracked in notebooks, slips, or verbal agreements. When the two sides' records differ, it is hard to establish what happened.
+Parchi is a prototype for Tech4Bharat 2026 problem statement 2.2 (Jeweltech, Agentic AI). It addresses a familiar workshop problem: gold is issued to a karigar for job-work, finished pieces and scrap come back later, and the weights, agreed wastage, deadlines, and payments are often tracked in notebooks, slips, or verbal agreements. When the two sides' records differ, it is hard to establish what happened.
 
-Jeweltech turns that process into a living workflow: a jeweller can track gold from issue through return and settlement, while the karigar can inspect and acknowledge the same entries in a simple paper-slip-style view. Proactive assistance can surface pending approvals, delays, exposure, and disputes—but gold and money are never moved by an AI suggestion alone.
+Parchi turns that process into a living workflow: a jeweller can track gold from issue through return and settlement, while the karigar can inspect and acknowledge the same entries in a simple paper-slip-style view. Proactive assistance can surface pending approvals, delays, exposure, and disputes—but gold and money are never moved by an AI suggestion alone.
 
 > **Prototype notice:** This repository is a local demo, not production financial software. Seeded people, jobs, measurements, rates, valuations, payments, PIN login, assay readings, and notifications are synthetic or simulated. Trade conventions and thresholds are not validated guidance. See [DECISIONS.md](./DECISIONS.md) for assumptions and field-validation notes.
 
